@@ -316,6 +316,86 @@ def _grid_row_ids(layout: dict[str, Any]) -> list[str]:
     return [child for child in children if isinstance(child, str)]
 
 
+def _grid_children(layout: dict[str, Any]) -> list[str] | None:
+    grid = layout.get("GRID_ID")
+    if not isinstance(grid, dict):
+        return None
+    children = grid.get("children")
+    return children if isinstance(children, list) else None
+
+
+def _create_empty_row_component() -> dict[str, Any]:
+    row_id = generate_id("ROW")
+    return {
+        "children": [],
+        "id": row_id,
+        "meta": {"background": "BACKGROUND_TRANSPARENT"},
+        "parents": ["ROOT_ID", "GRID_ID"],
+        "type": "ROW",
+    }
+
+
+def _insert_empty_row(layout: dict[str, Any], row_index: int) -> str | None:
+    row_ids = _grid_row_ids(layout)
+    if row_index > len(row_ids):
+        return f"row_index {row_index} is out of range for this dashboard layout"
+
+    children = _grid_children(layout)
+    if children is None:
+        return "Dashboard grid has an invalid children structure"
+
+    row_component = _create_empty_row_component()
+    row_id = row_component["id"]
+    layout[row_id] = row_component
+    children.insert(row_index, row_id)
+    return None
+
+
+def _move_row(
+    layout: dict[str, Any],
+    row_index: int,
+    target_row_index: int,
+) -> str | None:
+    row_ids = _grid_row_ids(layout)
+    if row_index >= len(row_ids):
+        return f"row_index {row_index} is out of range for this dashboard layout"
+    if target_row_index >= len(row_ids):
+        return (
+            f"target_row_index {target_row_index} is out of range for this "
+            "dashboard layout"
+        )
+
+    children = _grid_children(layout)
+    if children is None:
+        return "Dashboard grid has an invalid children structure"
+
+    row_id = row_ids[row_index]
+    children.remove(row_id)
+    children.insert(target_row_index, row_id)
+    return None
+
+
+def _remove_empty_row(layout: dict[str, Any], row_index: int) -> str | None:
+    row_ids = _grid_row_ids(layout)
+    if row_index >= len(row_ids):
+        return f"row_index {row_index} is out of range for this dashboard layout"
+
+    row_id = row_ids[row_index]
+    row = layout.get(row_id)
+    if not isinstance(row, dict) or row.get("type") != "ROW":
+        return f"Target row {row_id} is invalid"
+    if row.get("children"):
+        return f"Row {row_id} is not empty and cannot be removed"
+
+    children = _grid_children(layout)
+    if children is None:
+        return "Dashboard grid has an invalid children structure"
+
+    children.remove(row_id)
+    layout.pop(row_id, None)
+    return None
+
+
 def _detach_chart_from_layout(layout: dict[str, Any], chart_key: str) -> str | None:
     chart_component = layout.get(chart_key)
     if not isinstance(chart_component, dict):
@@ -382,6 +462,17 @@ def _ensure_target_row(
     if not isinstance(row, dict) or row.get("type") != "ROW":
         return None, f"Target row {row_id} is invalid"
     return row_id, None
+
+
+def _apply_single_row_action(layout: dict[str, Any], row_action: Any) -> str | None:
+    action = getattr(row_action, "action", None)
+    if action == "insert_empty":
+        return _insert_empty_row(layout, row_action.row_index)
+    if action == "move_row":
+        return _move_row(layout, row_action.row_index, row_action.target_row_index)
+    if action == "remove_empty":
+        return _remove_empty_row(layout, row_action.row_index)
+    return f"Unsupported row action: {action}"
 
 
 def _insert_chart_into_row(
@@ -469,6 +560,21 @@ def apply_chart_moves(
 
     if (width_error := _validate_row_widths(updated)) is not None:
         return None, width_error
+
+    return updated, None
+
+
+def apply_row_actions(
+    layout: dict[str, Any],
+    row_actions: list[Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Apply typed row/container actions to a dashboard layout."""
+    updated = deepcopy(layout)
+
+    for row_action in row_actions:
+        error = _apply_single_row_action(updated, row_action)
+        if error is not None:
+            return None, error
 
     return updated, None
 

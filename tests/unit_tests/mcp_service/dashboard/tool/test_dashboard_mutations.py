@@ -382,6 +382,156 @@ class TestUpdateDashboard:
     @patch("superset.commands.dashboard.update.UpdateDashboardCommand")
     @patch("superset.mcp_service.dashboard.tool.update_dashboard.resolve_dashboard")
     @pytest.mark.asyncio
+    async def test_update_dashboard_applies_row_actions(
+        self,
+        mock_resolve_dashboard,
+        mock_update_command,
+        mcp_server,
+    ) -> None:
+        dashboard = _mock_dashboard(15, "Row Action Dashboard")
+        dashboard.position_json = json.dumps(
+            {
+                "CHART-10": {
+                    "id": "CHART-10",
+                    "type": "CHART",
+                    "meta": {"chartId": 10, "height": 50, "width": 4},
+                    "parents": ["ROOT_ID", "GRID_ID", "ROW-1", "COLUMN-1"],
+                    "children": [],
+                },
+                "CHART-20": {
+                    "id": "CHART-20",
+                    "type": "CHART",
+                    "meta": {"chartId": 20, "height": 50, "width": 4},
+                    "parents": ["ROOT_ID", "GRID_ID", "ROW-2", "COLUMN-2"],
+                    "children": [],
+                },
+                "COLUMN-1": {
+                    "id": "COLUMN-1",
+                    "type": "COLUMN",
+                    "meta": {"width": 4},
+                    "parents": ["ROOT_ID", "GRID_ID", "ROW-1"],
+                    "children": ["CHART-10"],
+                },
+                "COLUMN-2": {
+                    "id": "COLUMN-2",
+                    "type": "COLUMN",
+                    "meta": {"width": 4},
+                    "parents": ["ROOT_ID", "GRID_ID", "ROW-2"],
+                    "children": ["CHART-20"],
+                },
+                "ROW-1": {
+                    "id": "ROW-1",
+                    "type": "ROW",
+                    "parents": ["ROOT_ID", "GRID_ID"],
+                    "children": ["COLUMN-1"],
+                },
+                "ROW-2": {
+                    "id": "ROW-2",
+                    "type": "ROW",
+                    "parents": ["ROOT_ID", "GRID_ID"],
+                    "children": ["COLUMN-2"],
+                },
+                "GRID_ID": {
+                    "id": "GRID_ID",
+                    "type": "GRID",
+                    "parents": ["ROOT_ID"],
+                    "children": ["ROW-1", "ROW-2"],
+                },
+                "ROOT_ID": {"id": "ROOT_ID", "type": "ROOT", "children": ["GRID_ID"]},
+                "DASHBOARD_VERSION_KEY": "v2",
+            }
+        )
+        updated_dashboard = _mock_dashboard(15, "Row Action Dashboard")
+        mock_resolve_dashboard.side_effect = [dashboard, updated_dashboard]
+        mock_update_command.return_value.run.return_value = updated_dashboard
+
+        request = {
+            "identifier": 15,
+            "row_actions": [
+                {"action": "insert_empty", "row_index": 1},
+                {"action": "move_row", "row_index": 2, "target_row_index": 0},
+            ],
+        }
+
+        async with Client(mcp_server) as client:
+            result = await client.call_tool("update_dashboard", {"request": request})
+
+        assert result.structured_content["error"] is None
+        payload = mock_update_command.call_args.args[1]
+        metadata = json.loads(payload["json_metadata"])
+        positions = metadata["positions"]
+        grid_rows = positions["GRID_ID"]["children"]
+        assert len(grid_rows) == 3
+        first_row_chart_ids = [
+            positions[positions[column_id]["children"][0]]["meta"]["chartId"]
+            for column_id in positions[grid_rows[0]]["children"]
+        ]
+        assert first_row_chart_ids == [20]
+        assert positions[grid_rows[2]]["children"] == []
+
+    @patch("superset.commands.dashboard.update.UpdateDashboardCommand")
+    @patch("superset.mcp_service.dashboard.tool.update_dashboard.resolve_dashboard")
+    @pytest.mark.asyncio
+    async def test_update_dashboard_rejects_non_empty_row_removal(
+        self,
+        mock_resolve_dashboard,
+        mock_update_command,
+        mcp_server,
+    ) -> None:
+        dashboard = _mock_dashboard(16, "Non Empty Row Dashboard")
+        dashboard.position_json = json.dumps(
+            {
+                "CHART-10": {
+                    "id": "CHART-10",
+                    "type": "CHART",
+                    "meta": {"chartId": 10, "height": 50, "width": 4},
+                    "parents": ["ROOT_ID", "GRID_ID", "ROW-1", "COLUMN-1"],
+                    "children": [],
+                },
+                "COLUMN-1": {
+                    "id": "COLUMN-1",
+                    "type": "COLUMN",
+                    "meta": {"width": 4},
+                    "parents": ["ROOT_ID", "GRID_ID", "ROW-1"],
+                    "children": ["CHART-10"],
+                },
+                "ROW-1": {
+                    "id": "ROW-1",
+                    "type": "ROW",
+                    "parents": ["ROOT_ID", "GRID_ID"],
+                    "children": ["COLUMN-1"],
+                },
+                "GRID_ID": {
+                    "id": "GRID_ID",
+                    "type": "GRID",
+                    "parents": ["ROOT_ID"],
+                    "children": ["ROW-1"],
+                },
+                "ROOT_ID": {"id": "ROOT_ID", "type": "ROOT", "children": ["GRID_ID"]},
+                "DASHBOARD_VERSION_KEY": "v2",
+            }
+        )
+        mock_resolve_dashboard.return_value = dashboard
+
+        async with Client(mcp_server) as client:
+            result = await client.call_tool(
+                "update_dashboard",
+                {
+                    "request": {
+                        "identifier": 16,
+                        "row_actions": [{"action": "remove_empty", "row_index": 0}],
+                    }
+                },
+            )
+
+        assert result.structured_content["dashboard"] is None
+        assert result.structured_content["error"]["error_type"] == "ValidationError"
+        assert "not empty" in result.structured_content["error"]["error"]
+        mock_update_command.assert_not_called()
+
+    @patch("superset.commands.dashboard.update.UpdateDashboardCommand")
+    @patch("superset.mcp_service.dashboard.tool.update_dashboard.resolve_dashboard")
+    @pytest.mark.asyncio
     async def test_update_dashboard_returns_structured_error_on_runtime_failure(
         self,
         mock_resolve_dashboard,
@@ -791,6 +941,16 @@ class TestDashboardMutationSchemas:
                 identifier=1,
                 chart_ids=[10],
                 chart_moves=[{"chart_id": 10, "row_index": 0, "column_index": 0}],
+            )
+
+    def test_update_dashboard_request_rejects_row_actions_with_layout_rebuild(
+        self,
+    ) -> None:
+        with pytest.raises(ValueError, match="row_actions cannot be combined"):
+            UpdateDashboardRequest(
+                identifier=1,
+                layout_rows=[{"chart_ids": [10]}],
+                row_actions=[{"action": "insert_empty", "row_index": 1}],
             )
 
     def test_dashboard_native_filter_rejects_metric_prefilters(self) -> None:

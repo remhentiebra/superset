@@ -34,6 +34,7 @@ from superset.mcp_service.dashboard.schemas import (
 from superset.mcp_service.dashboard.utils import (
     apply_chart_dimension_updates,
     apply_chart_moves,
+    apply_row_actions,
     build_dashboard_metadata_payload,
     create_dashboard_layout,
     create_dashboard_layout_from_rows,
@@ -150,7 +151,11 @@ def _build_requested_layout(
         if chart_objects is None:
             return None, error
         layout = create_dashboard_layout(chart_objects)
-    elif request.chart_dimensions is not None or request.chart_moves is not None:
+    elif (
+        request.chart_dimensions is not None
+        or request.chart_moves is not None
+        or request.row_actions is not None
+    ):
         layout = load_dashboard_layout(dashboard)
     return layout, None
 
@@ -160,6 +165,13 @@ def _apply_layout_mutations(
     request: UpdateDashboardRequest,
     layout: dict[str, Any] | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
+    if request.row_actions is not None:
+        if layout is None:
+            layout = load_dashboard_layout(dashboard)
+        layout, error = apply_row_actions(layout, request.row_actions)
+        if layout is None:
+            return None, error
+
     if request.chart_moves is not None:
         if layout is None:
             layout = load_dashboard_layout(dashboard)

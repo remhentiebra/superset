@@ -492,6 +492,70 @@ class DashboardMutationResponse(BaseModel):
     )
 
 
+class DashboardInsertEmptyRowAction(BaseModel):
+    """Insert an empty row container into the dashboard grid."""
+
+    action: Literal["insert_empty"] = Field(
+        ...,
+        description="Insert an empty row container at row_index",
+    )
+    row_index: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Zero-based row index where the empty row should be inserted. "
+            "Use the current row count to append a row."
+        ),
+    )
+
+
+class DashboardMoveRowAction(BaseModel):
+    """Move an existing row container to a different grid index."""
+
+    action: Literal["move_row"] = Field(
+        ...,
+        description="Move an existing row to target_row_index",
+    )
+    row_index: int = Field(
+        ...,
+        ge=0,
+        description="Zero-based source row index in the current layout",
+    )
+    target_row_index: int = Field(
+        ...,
+        ge=0,
+        description="Zero-based destination row index after the move",
+    )
+
+    @model_validator(mode="after")
+    def validate_target_index(self) -> "DashboardMoveRowAction":
+        if self.row_index == self.target_row_index:
+            raise ValueError("row_index and target_row_index must differ")
+        return self
+
+
+class DashboardRemoveEmptyRowAction(BaseModel):
+    """Remove an empty row container from the dashboard grid."""
+
+    action: Literal["remove_empty"] = Field(
+        ...,
+        description="Remove an empty row container at row_index",
+    )
+    row_index: int = Field(
+        ...,
+        ge=0,
+        description="Zero-based row index of the empty row to remove",
+    )
+
+
+DashboardRowAction = Annotated[
+    DashboardInsertEmptyRowAction
+    | DashboardMoveRowAction
+    | DashboardRemoveEmptyRowAction,
+    Field(discriminator="action"),
+]
+
+
 class UpdateDashboardRequest(BaseModel):
     """Typed request schema for updating dashboard metadata and layout."""
 
@@ -559,6 +623,14 @@ class UpdateDashboardRequest(BaseModel):
         ),
         min_length=1,
     )
+    row_actions: List[DashboardRowAction] | None = Field(
+        None,
+        description=(
+            "Optional row/container actions applied to the current layout, such "
+            "as inserting an empty row, moving a row, or removing an empty row."
+        ),
+        min_length=1,
+    )
 
     @field_validator("chart_ids")
     @classmethod
@@ -594,6 +666,13 @@ class UpdateDashboardRequest(BaseModel):
                 raise ValueError(
                     "chart_moves cannot be combined with chart_ids or layout_rows"
                 )
+
+        if self.row_actions and (
+            self.chart_ids is not None or self.layout_rows is not None
+        ):
+            raise ValueError(
+                "row_actions cannot be combined with chart_ids or layout_rows"
+            )
 
         return self
 

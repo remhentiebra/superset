@@ -444,9 +444,35 @@ Expand Superset MCP as a typed API in incremental batches, starting with shared 
     - `generate_dashboard`, `update_dashboard`, and `upsert_dashboard_native_filters` all succeeded in the same live workflow without generic middleware errors
     - a native dashboard filter targeting `organization_id` was created successfully for the saved chart
 
+### 2026-04-02 Batch 15
+- Scope:
+  - close the remaining dashboard ergonomics gap by extending `update_dashboard` with typed row/container actions
+  - allow callers to insert an empty row, reorder rows, and remove empty rows without rebuilding the full layout or moving charts one by one
+  - keep the new layout controls additive and composed with the existing `chart_moves` / `chart_dimensions` path
+- Schemas/tools modified:
+  - `superset/mcp_service/dashboard/schemas.py`
+  - `superset/mcp_service/dashboard/utils.py`
+  - `superset/mcp_service/dashboard/tool/update_dashboard.py`
+  - `superset/mcp_service/app.py`
+  - `tests/unit_tests/mcp_service/dashboard/tool/test_dashboard_mutations.py`
+- Compatibility notes:
+  - `update_dashboard` remains the single typed dashboard mutation tool; no parallel layout tool was introduced
+  - `row_actions` is additive and intentionally disallowed with `chart_ids` / `layout_rows`, because those request shapes already define a full layout rebuild
+  - `row_actions` composes with the existing current-layout mutation path, so callers can insert an empty row first and then use `chart_moves` to move charts into it
+- Tests:
+  - added focused unit coverage for row insertion/reordering, rejecting removal of non-empty rows, and schema validation for `row_actions`
+  - ran `python -m compileall` on the modified dashboard modules and tests
+  - ran `pre-commit run --files ...` on the modified dashboard files and passed `mypy`, `ruff-format`, `ruff`, and `pylint`
+  - host-side `pytest` execution for the dashboard MCP test file did not produce a reliable local result in this shell
+  - live validation through the running MCP stack confirmed that:
+    - `generate_chart` and `generate_dashboard` succeeded against a real local dataset
+    - `update_dashboard.row_actions=[{"action": "insert_empty", "row_index": 0}]` inserted a new empty row ahead of the existing populated row
+    - `update_dashboard.row_actions=[{"action": "move_row", "row_index": 1, "target_row_index": 0}]` reordered the populated row to the top of the grid
+    - `update_dashboard.row_actions=[{"action": "remove_empty", "row_index": 1}]` removed the empty row cleanly
+    - attempting to remove the non-empty row returned a structured `ValidationError` payload instead of a generic middleware failure
+
 ## Open Gaps
-- No blocking runtime-hardening or filter-parity gaps remain from the reopened roadmap.
-- Optional dashboard row/container-level mutations remain a future enhancement if a concrete layout workflow needs them.
+- No blocking MCP capability gaps remain in the current roadmap.
 - Host-side `pytest` collection for MCP tests that import the full tool package is still blocked in the local `.venv` because the installed `apache-superset-core` package predates `ToolAnnotations`; live stack validation and targeted unit tests were used to close the current roadmap.
 
 ## Known Constraints
@@ -460,8 +486,7 @@ Expand Superset MCP as a typed API in incremental batches, starting with shared 
 ## Next Recommended Batch
 No required implementation batch remains for the current MCP roadmap.
 
-If future work is needed, the next optional batch should be limited to dashboard ergonomics:
-- add row/container-level dashboard layout mutations only if a concrete workflow needs them
+If further work is needed, the next step should be live validation and polish:
 - revisit a typed `get_chart_data` filter wrapper only if usability feedback shows that `extra_form_data` is too opaque despite the runtime parity fixes
 
 ## Validation Checklist
@@ -471,5 +496,6 @@ If future work is needed, the next optional batch should be limited to dashboard
 - Add integration-style validation for workflows that cross MCP tool boundaries rather than stopping at mocked command payloads.
 - Verify `create_virtual_dataset` succeeds on valid input and returns structured errors for invalid SQL, duplicate datasets, missing database IDs, and permission denial.
 - Verify `update_dashboard`, `upsert_dashboard_native_filters`, and `remove_chart_from_dashboard` do not leak generic middleware `err_*` for expected dashboard mutation failures.
+- Verify `update_dashboard.row_actions` can insert, reorder, and remove row containers as expected on a real dashboard layout.
 - Verify `get_chart_data` applies organization filters through `extra_form_data` on a real saved chart.
 - Record which tests were run, skipped, or deferred in the batch entry above.

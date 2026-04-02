@@ -55,7 +55,7 @@ Dashboard Management:
 - get_dashboard_info: Get detailed dashboard information by ID
 - generate_dashboard: Create a dashboard from chart IDs
 - add_chart_to_existing_dashboard: Add a chart to an existing dashboard
-- update_dashboard: Update dashboard metadata and typed chart layout/move actions
+- update_dashboard: Update dashboard metadata and typed chart/row layout actions
 - remove_chart_from_dashboard: Remove a chart and clean related dashboard metadata
 - upsert_dashboard_native_filters:
   Create or update dashboard native filters with typed scoping and prefilters
@@ -246,7 +246,8 @@ IMPORTANT - Tool-Only Interaction:
   update_dataset_metrics, and update_dataset_calculated_columns instead of
   describing raw REST payloads.
 - update_dashboard supports typed layout controls. Use chart_ids for a simple
-  auto-grid rebuild, layout_rows for explicit row grouping/order, and
+  auto-grid rebuild, layout_rows for explicit row grouping/order, row_actions
+  for row insertion/reordering/removal, chart_moves for chart reflow, and
   chart_dimensions to resize charts in the existing or rebuilt layout.
 - upsert_dashboard_native_filters supports typed scope controls like root_path,
   charts_in_scope, tabs_in_scope, excluded_charts, and default filter values.
