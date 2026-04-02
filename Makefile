@@ -18,7 +18,7 @@
 # Python version installed; we need 3.10-3.11
 PYTHON=`command -v python3.11 || command -v python3.10`
 
-.PHONY: install superset venv pre-commit up down logs ps nuke ports open
+.PHONY: install superset venv pre-commit up up-detached up-mcp up-mcp-detached down down-mcp logs logs-mcp ps ps-mcp nuke ports open
 
 install: superset pre-commit
 
@@ -120,14 +120,29 @@ up:
 up-detached:
 	./scripts/docker-compose-up.sh -d
 
+up-mcp:
+	SUPERSET_BUILD_TARGET=mcp COMPOSE_PROJECT_NAME=superset-mcp COMPOSE_PROFILES=mcp ./scripts/docker-compose-up.sh db redis superset-init superset superset-mcp
+
+up-mcp-detached:
+	SUPERSET_BUILD_TARGET=mcp COMPOSE_PROJECT_NAME=superset-mcp COMPOSE_PROFILES=mcp ./scripts/docker-compose-up.sh -d db redis superset-init superset superset-mcp
+
 down:
 	./scripts/docker-compose-up.sh down
+
+down-mcp:
+	COMPOSE_PROJECT_NAME=superset-mcp COMPOSE_PROFILES=mcp ./scripts/docker-compose-up.sh down
 
 logs:
 	./scripts/docker-compose-up.sh logs -f
 
+logs-mcp:
+	COMPOSE_PROJECT_NAME=superset-mcp COMPOSE_PROFILES=mcp ./scripts/docker-compose-up.sh logs -f superset superset-mcp db redis
+
 ps:
 	./scripts/docker-compose-up.sh ps
+
+ps-mcp:
+	COMPOSE_PROJECT_NAME=superset-mcp COMPOSE_PROFILES=mcp ./scripts/docker-compose-up.sh ps
 
 nuke:
 	./scripts/docker-compose-up.sh nuke

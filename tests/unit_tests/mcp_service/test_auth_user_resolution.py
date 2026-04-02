@@ -17,9 +17,12 @@
 
 """Tests for MCP user resolution priority and stale g.user prevention."""
 
+import inspect
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastmcp import Context
 from flask import g
 
 from superset.mcp_service.auth import (
@@ -370,6 +373,33 @@ def test_mcp_auth_hook_preserves_g_user_in_request_context(app) -> None:
             result = wrapped()
 
     assert result == "middleware_user"
+
+
+def test_mcp_auth_hook_handles_string_context_annotation(app) -> None:
+    """String ctx annotations are injected and stripped from the exposed signature."""
+    fresh_user = _make_mock_user("fresh")
+    sentinel_ctx = object()
+
+    def dummy_tool(request: int, ctx: "Context") -> object:
+        """Dummy tool."""
+        assert g.user.username == "fresh"
+        return ctx
+
+    wrapped = mcp_auth_hook(dummy_tool)
+
+    with app.app_context():
+        with (
+            patch("flask.has_request_context", return_value=False),
+            patch(
+                "superset.mcp_service.auth.get_user_from_request",
+                return_value=fresh_user,
+            ),
+            patch("fastmcp.server.dependencies.get_context", return_value=sentinel_ctx),
+        ):
+            assert list(inspect.signature(wrapped).parameters) == ["request"]
+            result = cast(Any, wrapped)(123)
+
+    assert result is sentinel_ctx
 
 
 # -- default_user_resolver --

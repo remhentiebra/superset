@@ -213,6 +213,25 @@ class TestNormalizeFilters:
         assert config_dict["filters"][0]["column"] == "ProductLine"
         assert config_dict["filters"][1]["column"] == "OrderDate"
 
+    def test_normalize_metric_filter_metric_columns(
+        self, mock_dataset_context: DatasetContext
+    ) -> None:
+        """Test that metric_filter ColumnRef targets are normalized."""
+        config_dict: Dict[str, Any] = {
+            "filters": [
+                {
+                    "filter_type": "metric_filter",
+                    "metric": {"name": "sales", "aggregate": "SUM"},
+                    "op": ">=",
+                    "value": 1000,
+                }
+            ],
+        }
+
+        DatasetValidator._normalize_filters(config_dict, mock_dataset_context)
+
+        assert config_dict["filters"][0]["metric"]["name"] == "Sales"
+
 
 class TestNormalizeColumnNames:
     """Test the main normalize_column_names method."""

@@ -24,10 +24,12 @@ system-level info.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, List
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, PositiveInt
+
+from superset.mcp_service.constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 
 
 class HealthCheckResponse(BaseModel):
@@ -110,6 +112,41 @@ class FeatureAvailability(BaseModel):
     )
 
 
+class DatabaseSummary(BaseModel):
+    """Minimal database metadata for discovery workflows."""
+
+    id: int = Field(..., description="Database ID")
+    database_name: str = Field(..., description="Database name")
+    backend: str | None = Field(None, description="SQLAlchemy backend name")
+
+
+class DatabaseInfo(DatabaseSummary):
+    """Detailed database metadata for SQL and virtual-dataset workflows."""
+
+    allow_file_upload: bool = Field(
+        ..., description="Whether the database allows file uploads"
+    )
+    allows_virtual_datasets: bool = Field(
+        ...,
+        description="Whether the database supports virtual dataset exploration",
+    )
+    explore_database_id: int | None = Field(
+        None,
+        description="Database ID to use for explore workflows when different from id",
+    )
+
+
+class AvailableDatasetSummary(BaseModel):
+    """Compact dataset metadata used by instance convenience resources."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int = Field(..., description="Dataset ID")
+    table_name: str = Field(..., description="Dataset table name")
+    schema_name: str | None = Field(None, description="Schema name", alias="schema")
+    database_id: int | None = Field(None, description="Database ID")
+
+
 class InstanceInfo(BaseModel):
     instance_summary: InstanceSummary
     recent_activity: RecentActivity
@@ -124,6 +161,19 @@ class InstanceInfo(BaseModel):
     )
     feature_availability: FeatureAvailability
     timestamp: datetime
+
+
+class InstanceMetadata(InstanceInfo):
+    """Extended instance metadata resource payload."""
+
+    available_databases: List[DatabaseSummary] = Field(
+        default_factory=list,
+        description="Accessible databases available for SQL-first workflows",
+    )
+    available_datasets: List[AvailableDatasetSummary] = Field(
+        default_factory=list,
+        description="Recently modified accessible datasets",
+    )
 
 
 class UserInfo(BaseModel):
@@ -176,6 +226,81 @@ class RoleInfo(BaseModel):
     id: int | None = None
     name: str | None = None
     permissions: List[str] | None = None
+
+
+class ListDatabasesRequest(BaseModel):
+    """Request schema for listing accessible databases."""
+
+    search: str | None = Field(
+        None,
+        description="Case-insensitive search across database name and backend",
+    )
+    backend: str | None = Field(
+        None,
+        description="Optional backend filter, for example postgres or clickhouse",
+    )
+    order_column: Literal["id", "database_name", "backend"] = Field(
+        default="database_name",
+        description="Sort column",
+    )
+    order_direction: Literal["asc", "desc"] = Field(
+        default="asc",
+        description="Sort direction",
+    )
+    page: PositiveInt = Field(default=1, description="1-based page number")
+    page_size: PositiveInt = Field(
+        default=DEFAULT_PAGE_SIZE,
+        description="Results per page",
+    )
+
+    @field_validator("search", "backend")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("page_size")
+    @classmethod
+    def clamp_page_size(cls, value: int) -> int:
+        return min(value, MAX_PAGE_SIZE)
+
+
+class ListDatabasesResponse(BaseModel):
+    """Paginated database discovery response."""
+
+    databases: List[DatabaseSummary] = Field(
+        default_factory=list,
+        description="Accessible databases matching the request",
+    )
+    count: int = Field(..., description="Number of databases in this page")
+    total_count: int = Field(..., description="Total number of matching databases")
+    page: int = Field(..., description="1-based page number")
+    page_size: int = Field(..., description="Results per page")
+    total_pages: int = Field(..., description="Total pages for the query")
+    has_previous: bool = Field(..., description="Whether a previous page exists")
+    has_next: bool = Field(..., description="Whether a next page exists")
+    pagination: PaginationInfo | None = None
+    timestamp: datetime | None = None
+    model_config = ConfigDict(ser_json_timedelta="iso8601")
+
+
+class GetDatabaseInfoRequest(BaseModel):
+    """Request schema for retrieving one database by ID."""
+
+    database_id: int = Field(..., description="Database ID")
+
+
+class DatabaseError(BaseModel):
+    """Error payload for database discovery tools."""
+
+    error: str = Field(..., description="Error message")
+    error_type: str = Field(..., description="Type of error")
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Error timestamp",
+    )
 
 
 class PaginationInfo(BaseModel):

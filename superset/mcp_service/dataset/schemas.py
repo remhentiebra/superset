@@ -26,9 +26,11 @@ from typing import Annotated, Any, Dict, List, Literal
 
 import humanize
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
+    field_validator,
     model_serializer,
     model_validator,
     PositiveInt,
@@ -298,6 +300,323 @@ class GetDatasetInfoRequest(MetadataCacheControl):
         int | str,
         Field(description="Dataset identifier - can be numeric ID or UUID string"),
     ]
+
+
+class CreateVirtualDatasetRequest(BaseModel):
+    """Request schema for creating a virtual dataset from typed SQL input."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    database_id: int = Field(..., description="Database ID for the virtual dataset")
+    table_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=250,
+        description="Dataset name to create",
+    )
+    sql: str = Field(
+        ...,
+        min_length=1,
+        description="SQL query used as the virtual dataset definition",
+        validation_alias=AliasChoices("sql", "query"),
+    )
+    schema_name: str | None = Field(
+        None,
+        alias="schema",
+        description="Database schema for the virtual dataset",
+        max_length=250,
+    )
+    catalog: str | None = Field(
+        None,
+        description="Catalog name for the virtual dataset",
+        max_length=250,
+    )
+    description: str | None = Field(
+        None,
+        description="Optional dataset description",
+    )
+    owners: List[int] = Field(
+        default_factory=list,
+        description="Optional owner user IDs for the dataset",
+    )
+    template_params: Dict[str, Any] | None = Field(
+        None,
+        description="Optional Jinja template parameters as a structured object",
+    )
+    normalize_columns: bool = Field(
+        default=False,
+        description="Whether Superset should normalize column names on fetch",
+    )
+    always_filter_main_dttm: bool = Field(
+        default=False,
+        description="Whether the main datetime column should always be filtered",
+    )
+
+    @field_validator("table_name", "sql")
+    @classmethod
+    def strip_non_empty_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be empty")
+        return value
+
+
+class DatasetMetricMutation(BaseModel):
+    """Typed metric payload for MCP dataset mutations."""
+
+    metric_name: str = Field(..., min_length=1, max_length=255)
+    expression: str = Field(..., min_length=1)
+    description: str | None = None
+    extra: Dict[str, Any] | None = None
+    metric_type: str | None = Field(None, max_length=32)
+    d3format: str | None = Field(None, max_length=128)
+    verbose_name: str | None = Field(None, max_length=1024)
+    warning_text: str | None = None
+    currency: Dict[str, Any] | None = None
+
+    @field_validator("metric_name", "expression")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be empty")
+        return value
+
+
+class UpdateDatasetMetricsRequest(BaseModel):
+    """Request schema for typed dataset metric mutations."""
+
+    identifier: int | str = Field(
+        ...,
+        description="Dataset identifier - can be numeric ID or UUID string",
+    )
+    metrics: List[DatasetMetricMutation] = Field(
+        default_factory=list,
+        description="Metrics to create or update by metric_name",
+    )
+    remove_metrics: List[str] = Field(
+        default_factory=list,
+        description="Existing metric names to remove from the dataset",
+    )
+    replace_metrics: bool = Field(
+        default=False,
+        description="Replace the full metric set instead of upserting into it",
+    )
+
+    @field_validator("remove_metrics")
+    @classmethod
+    def strip_removed_metric_names(cls, value: List[str]) -> List[str]:
+        stripped = [name.strip() for name in value if name.strip()]
+        if len(stripped) != len(set(stripped)):
+            raise ValueError("remove_metrics contains duplicate metric names")
+        return stripped
+
+    @model_validator(mode="after")
+    def validate_metric_mutation_request(self) -> "UpdateDatasetMetricsRequest":
+        metric_names = [metric.metric_name for metric in self.metrics]
+        if len(metric_names) != len(set(metric_names)):
+            raise ValueError("metrics contains duplicate metric names")
+        overlap = set(metric_names) & set(self.remove_metrics)
+        if overlap:
+            raise ValueError(
+                "metrics and remove_metrics cannot target the same metric names"
+            )
+        if self.replace_metrics and self.remove_metrics:
+            raise ValueError(
+                "remove_metrics cannot be used together with replace_metrics=True"
+            )
+        if not self.metrics and not self.remove_metrics and not self.replace_metrics:
+            raise ValueError(
+                "Provide metrics, remove_metrics, or replace_metrics=True "
+                "to update metrics"
+            )
+        return self
+
+
+class DatasetCalculatedColumnMutation(BaseModel):
+    """Typed calculated-column payload for MCP dataset mutations."""
+
+    column_name: str = Field(..., min_length=1, max_length=255)
+    expression: str = Field(..., min_length=1)
+    type: str | None = None
+    advanced_data_type: str | None = Field(None, max_length=255)
+    verbose_name: str | None = Field(None, max_length=1024)
+    description: str | None = None
+    extra: Dict[str, Any] | None = None
+    filterable: bool = True
+    groupby: bool = True
+    is_active: bool | None = True
+    is_dttm: bool | None = False
+    python_date_format: str | None = Field(None, max_length=255)
+    datetime_format: str | None = Field(None, max_length=100)
+
+    @field_validator("column_name", "expression")
+    @classmethod
+    def strip_required_column_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be empty")
+        return value
+
+
+class UpdateDatasetCalculatedColumnsRequest(BaseModel):
+    """Request schema for typed calculated-column mutations."""
+
+    identifier: int | str = Field(
+        ...,
+        description="Dataset identifier - can be numeric ID or UUID string",
+    )
+    columns: List[DatasetCalculatedColumnMutation] = Field(
+        default_factory=list,
+        description="Calculated columns to create or update by column_name",
+    )
+    remove_columns: List[str] = Field(
+        default_factory=list,
+        description="Existing calculated column names to remove",
+    )
+    replace_calculated_columns: bool = Field(
+        default=False,
+        description="Replace the calculated-column subset instead of upserting into it",
+    )
+
+    @field_validator("remove_columns")
+    @classmethod
+    def strip_removed_column_names(cls, value: List[str]) -> List[str]:
+        stripped = [name.strip() for name in value if name.strip()]
+        if len(stripped) != len(set(stripped)):
+            raise ValueError("remove_columns contains duplicate column names")
+        return stripped
+
+    @model_validator(mode="after")
+    def validate_calculated_column_mutation_request(
+        self,
+    ) -> "UpdateDatasetCalculatedColumnsRequest":
+        column_names = [column.column_name for column in self.columns]
+        if len(column_names) != len(set(column_names)):
+            raise ValueError("columns contains duplicate column names")
+        overlap = set(column_names) & set(self.remove_columns)
+        if overlap:
+            raise ValueError(
+                "columns and remove_columns cannot target the same column names"
+            )
+        if self.replace_calculated_columns and self.remove_columns:
+            raise ValueError(
+                "remove_columns cannot be used with replace_calculated_columns=True"
+            )
+        if (
+            not self.columns
+            and not self.remove_columns
+            and not self.replace_calculated_columns
+        ):
+            raise ValueError(
+                "Provide columns, remove_columns, or replace_calculated_columns=True"
+            )
+        return self
+
+
+class UpdateDatasetMetadataRequest(BaseModel):
+    """Request schema for typed dataset metadata and virtual SQL updates."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    identifier: int | str = Field(
+        ...,
+        description="Dataset identifier - can be numeric ID or UUID string",
+    )
+    table_name: str | None = Field(
+        None,
+        min_length=1,
+        max_length=250,
+        description="New dataset name. Only supported for virtual datasets.",
+    )
+    sql: str | None = Field(
+        None,
+        min_length=1,
+        description="Replacement SQL for a virtual dataset definition.",
+        validation_alias=AliasChoices("sql", "query"),
+    )
+    description: str | None = Field(
+        None,
+        description="Dataset description. Pass null to clear it.",
+    )
+    owners: List[int] | None = Field(
+        None,
+        description="Exact owner user IDs to set on the dataset.",
+    )
+    tag_names: List[str] | None = Field(
+        None,
+        description=(
+            "Exact set of custom tag names for the dataset. "
+            "Implicit tags are left untouched."
+        ),
+    )
+    template_params: Dict[str, Any] | None = Field(
+        None,
+        description=(
+            "Optional Jinja template parameters as a structured object. "
+            "Only supported for virtual datasets."
+        ),
+    )
+    main_dttm_col: str | None = Field(
+        None,
+        max_length=255,
+        description="Main datetime column name. Pass null to clear it.",
+    )
+    normalize_columns: bool | None = Field(
+        None,
+        description="Whether Superset should normalize fetched column names.",
+    )
+    always_filter_main_dttm: bool | None = Field(
+        None,
+        description=(
+            "Whether the dataset main datetime column should always be filtered."
+        ),
+    )
+    cache_timeout: int | None = Field(
+        None,
+        ge=-1,
+        description="Cache timeout in seconds. Pass -1 to disable cache.",
+    )
+
+    @field_validator("table_name", "sql", "main_dttm_col")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be empty")
+        return value
+
+    @field_validator("tag_names")
+    @classmethod
+    def normalize_tag_names(cls, value: List[str] | None) -> List[str] | None:
+        if value is None:
+            return None
+        normalized = [tag.strip() for tag in value if tag.strip()]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("tag_names contains duplicate values")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_has_metadata_changes(self) -> "UpdateDatasetMetadataRequest":
+        mutable_fields = (
+            "table_name",
+            "sql",
+            "description",
+            "owners",
+            "tag_names",
+            "template_params",
+            "main_dttm_col",
+            "normalize_columns",
+            "always_filter_main_dttm",
+            "cache_timeout",
+        )
+        if not any(
+            getattr(self, field_name) is not None for field_name in mutable_fields
+        ):
+            raise ValueError("Provide at least one metadata field to update")
+        return self
 
 
 def _parse_json_field(obj: Any, field_name: str) -> Dict[str, Any] | None:

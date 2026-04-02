@@ -68,11 +68,13 @@ async def quickstart_prompt(
         "developer": """**Workflow for Developers:**
 
 1. Call `get_instance_info` to understand the instance
-2. Call `get_schema(model_type)` to discover columns and filters
-3. Use `execute_sql(database_id, sql)` to run queries
-4. Use `open_sql_lab_with_context` for SQL Lab URLs
-5. Use `list_datasets`/`list_charts`/`list_dashboards` with filters
-6. Use `generate_explore_link` for chart previews without saving""",
+2. Call `list_databases` to find accessible database IDs
+3. Call `get_database_info(id)` to confirm backend and workflow capabilities
+4. Call `get_schema(model_type)` to discover columns and filters
+5. Use `execute_sql(database_id, sql)` to run queries
+6. Use `open_sql_lab_with_context` for SQL Lab URLs
+7. Use `list_datasets`/`list_charts`/`list_dashboards` with filters
+8. Use `generate_explore_link` for chart previews without saving""",
     }
 
     selected_workflow = workflows.get(user_type, workflows["analyst"])
@@ -83,6 +85,7 @@ async def quickstart_prompt(
 
 **Available Tools Summary:**
 - `get_instance_info` - Instance overview (databases, dataset count, chart count)
+- `list_databases` / `get_database_info` - Discover accessible database IDs
 - `list_datasets` / `get_dataset_info` - Find and examine data sources
 - `list_charts` / `get_chart_info` - Browse existing charts
 - `list_dashboards` / `get_dashboard_info` - Browse existing dashboards
@@ -92,4 +95,6 @@ async def quickstart_prompt(
 - `execute_sql` - Run SQL queries against a database
 - `get_schema` - Discover filterable/sortable columns for list tools
 
-Start by calling `get_instance_info` to see what data is available."""
+For SQL and virtual-dataset workflows, start with `list_databases`
+and `get_database_info`. For general orientation, start with
+`get_instance_info` to see what data is available."""

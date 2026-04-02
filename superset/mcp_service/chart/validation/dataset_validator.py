@@ -310,7 +310,22 @@ class DatasetValidator:
         """Normalize filter column names in a config dict in place."""
         if "filters" in config_dict and config_dict["filters"]:
             for filter_config in config_dict["filters"]:
-                if filter_config and "column" in filter_config:
+                if not filter_config:
+                    continue
+                if filter_config.get("filter_type") == "metric_filter":
+                    metric_config = filter_config.get("metric")
+                    if (
+                        isinstance(metric_config, dict)
+                        and "name" in metric_config
+                        and metric_config["name"]
+                    ):
+                        metric_config["name"] = (
+                            DatasetValidator._get_canonical_column_name(
+                                metric_config["name"], dataset_context
+                            )
+                        )
+                    continue
+                if "column" in filter_config:
                     filter_config["column"] = (
                         DatasetValidator._get_canonical_column_name(
                             filter_config["column"], dataset_context

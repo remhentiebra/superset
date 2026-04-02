@@ -1,3 +1,5 @@
+# ruff: noqa: S608
+
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -41,7 +43,7 @@ def get_default_instructions(branding: str = "Apache Superset") -> str:
     Returns:
         Formatted instructions string with branding applied
     """
-    return f"""
+    return f"""  # noqa: S608
 You are connected to the {branding} MCP (Model Context Protocol) service.
 This service provides programmatic access to {branding} dashboards, charts, datasets,
 SQL Lab, and instance metadata via a comprehensive set of tools.
@@ -53,10 +55,18 @@ Dashboard Management:
 - get_dashboard_info: Get detailed dashboard information by ID
 - generate_dashboard: Create a dashboard from chart IDs
 - add_chart_to_existing_dashboard: Add a chart to an existing dashboard
+- update_dashboard: Update dashboard metadata and typed chart layout/move actions
+- remove_chart_from_dashboard: Remove a chart and clean related dashboard metadata
+- upsert_dashboard_native_filters:
+  Create or update dashboard native filters with typed scoping and prefilters
 
 Dataset Management:
 - list_datasets: List datasets with advanced filters (1-based pagination)
 - get_dataset_info: Get detailed dataset information by ID (includes columns/metrics)
+- create_virtual_dataset: Create a virtual dataset from typed SQL input
+- update_dataset_metadata: Update dataset metadata and virtual dataset SQL safely
+- update_dataset_metrics: Create, update, or remove dataset metrics with typed payloads
+- update_dataset_calculated_columns: Create, update, or remove calculated columns
 
 Chart Management:
 - list_charts: List charts with advanced filters (1-based pagination)
@@ -70,7 +80,14 @@ Chart Management:
 
 SQL Lab Integration:
 - execute_sql: Execute SQL queries and get results (requires database_id)
+- list_saved_queries: List the current user's saved SQL Lab queries
+- get_saved_query: Get one saved SQL query by ID
 - save_sql_query: Save a SQL query to Saved Queries list
+- create_virtual_dataset_from_saved_query: Promote a saved query into a virtual dataset
+- generate_chart_from_saved_query:
+  Promote a saved query into a virtual dataset and chart
+- generate_explore_link_from_saved_query:
+  Promote a saved query into a virtual dataset and explore link
 - open_sql_lab_with_context: Generate SQL Lab URL with pre-filled sql
 
 Schema Discovery:
@@ -78,10 +95,13 @@ Schema Discovery:
 
 System Information:
 - get_instance_info: Get instance-wide statistics, metadata, and current user identity
+- list_databases: List accessible databases for SQL and virtual-dataset workflows
+- get_database_info: Get one accessible database by ID
 - health_check: Simple health check tool (takes NO parameters, call without arguments)
 
 Available Resources:
-- instance://metadata: Instance configuration, stats, and available dataset IDs
+- instance://metadata: Convenience summary of instance stats plus accessible database
+  and dataset IDs
 - chart://configs: Valid chart configuration examples and best practices
 
 Available Prompts:
@@ -122,10 +142,19 @@ To find your own charts/dashboards:
    "opr": "eq", "value": current_user.id}}])
 
 To explore data with SQL:
-1. list_datasets -> find a dataset and note its database_id
-2. execute_sql(database_id, sql) -> run query
-3. save_sql_query(database_id, label, sql) -> save query for later reuse
-4. open_sql_lab_with_context(database_id) -> open SQL Lab UI
+1. list_databases -> choose an accessible database
+2. get_database_info(database_id) -> confirm backend and workflow capabilities
+3. execute_sql(database_id, sql) -> run query
+4. save_sql_query(database_id, label, sql) -> save query for later reuse
+5. list_saved_queries or get_saved_query -> rediscover saved work
+6. create_virtual_dataset(database_id, table_name, sql) or
+   create_virtual_dataset_from_saved_query ->
+   promote reusable SQL into dataset metadata
+7. generate_chart_from_saved_query(saved_query_id, config) ->
+   turn saved SQL directly into a chart workflow
+8. generate_explore_link_from_saved_query(saved_query_id, config) ->
+   preview a saved query as an interactive explore workflow
+9. open_sql_lab_with_context(database_id) -> open SQL Lab UI
 
 generate_explore_link vs generate_chart:
 - Use generate_explore_link for exploration (no permanent chart created)
@@ -142,6 +171,17 @@ Chart Types You Can CREATE with generate_chart/generate_explore_link:
 - chart_type="table": Data table for detailed views
 - chart_type="table", viz_type="ag-grid-table": Interactive AG Grid table
 - chart_type="pie": Pie chart for proportional data (set donut=True for donut)
+- chart_type="funnel": Funnel chart for stage conversion analysis
+- chart_type="big_number": Big number KPI chart (set show_trend_line=true for trend)
+- chart_type="gauge": Gauge chart for KPI attainment
+- chart_type="heatmap": Heatmap chart for two-dimensional metric comparison
+- chart_type="treemap": Hierarchical treemap for nested part-to-whole analysis
+- chart_type="sunburst": Radial hierarchy chart for nested category proportions
+- chart_type="sankey": Flow chart for source-to-target transitions
+- chart_type="word_cloud": Word cloud sized by a metric
+- chart_type="world_map": Geographic world map keyed by country/entity
+- chart_type="box_plot": Distribution chart with quartiles and outliers
+- chart_type="bubble": Bubble chart for x/y/size metric comparison
 - chart_type="pivot_table": Interactive pivot table for cross-tabulation
 - chart_type="mixed_timeseries": Dual-series chart combining two chart types
 - chart_type="handlebars": Custom HTML template chart (KPI cards, leaderboards, reports)
@@ -174,6 +214,13 @@ To modify an existing chart (add filters, change metrics, change dimensions, etc
 2. update_chart(chart_id, config) -> apply changes (filters, metrics, dimensions)
 Do NOT use execute_sql for chart modifications. Use update_chart instead.
 
+Filter types for chart configs:
+- value_filter: equality, pattern matching, and set membership
+- range_filter: >, >=, <, <=, BETWEEN
+- null_filter: IS NULL, IS NOT NULL
+- time_filter: explicit time_range on a temporal column
+- metric_filter: HAVING-style threshold filters on aggregate chart metrics
+
 CRITICAL RULES - NEVER VIOLATE:
 - NEVER fabricate or invent URLs. ALL URLs must come from tool call results.
   If you need a link, call the appropriate tool (generate_explore_link, generate_chart,
@@ -192,7 +239,17 @@ IMPORTANT - Tool-Only Interaction:
 - When a tool returns a URL (chart URL, dashboard URL, explore link, SQL Lab link),
   return that URL to the user. Do NOT attempt to recreate the visualization in code.
 - Do NOT generate HTML dashboards, embed scripts, or custom frontend code. Use
-  generate_dashboard and add_chart_to_existing_dashboard for dashboard operations.
+  generate_dashboard, update_dashboard, add_chart_to_existing_dashboard,
+  remove_chart_from_dashboard, and upsert_dashboard_native_filters for dashboard
+  operations.
+- For dataset authoring, prefer create_virtual_dataset,
+  update_dataset_metrics, and update_dataset_calculated_columns instead of
+  describing raw REST payloads.
+- update_dashboard supports typed layout controls. Use chart_ids for a simple
+  auto-grid rebuild, layout_rows for explicit row grouping/order, and
+  chart_dimensions to resize charts in the existing or rebuilt layout.
+- upsert_dashboard_native_filters supports typed scope controls like root_path,
+  charts_in_scope, tabs_in_scope, excluded_charts, and default filter values.
 - If a user asks for something the tools cannot do, explain the limitation and suggest
   the closest available tool rather than generating code as a workaround.
 
@@ -230,8 +287,9 @@ Permission Awareness:
 - If you are unsure about a user's capabilities, check their accessible_menus in
   feature_availability from get_instance_info.
 
-If you are unsure which tool to use, start with get_instance_info
-or use the quickstart prompt for an interactive guide.
+If you are unsure which tool to use, start with get_instance_info.
+For SQL-first workflows, then call list_databases and get_database_info.
+You can also use the quickstart prompt for an interactive guide.
 
 When you first connect, call get_instance_info to learn the user's identity.
 Greet them by their first name (from current_user) and offer to help.
@@ -431,16 +489,28 @@ from superset.mcp_service.dashboard.tool import (  # noqa: F401, E402
     generate_dashboard,
     get_dashboard_info,
     list_dashboards,
+    remove_chart_from_dashboard,
+    update_dashboard,
+    upsert_dashboard_native_filters,
 )
 from superset.mcp_service.dataset.tool import (  # noqa: F401, E402
+    create_virtual_dataset,
     get_dataset_info,
     list_datasets,
+    update_dataset_calculated_columns,
+    update_dataset_metadata,
+    update_dataset_metrics,
 )
 from superset.mcp_service.explore.tool import (  # noqa: F401, E402
     generate_explore_link,
 )
 from superset.mcp_service.sql_lab.tool import (  # noqa: F401, E402
+    create_virtual_dataset_from_saved_query,
     execute_sql,
+    generate_chart_from_saved_query,
+    generate_explore_link_from_saved_query,
+    get_saved_query,
+    list_saved_queries,
     open_sql_lab_with_context,
     save_sql_query,
 )
@@ -449,9 +519,11 @@ from superset.mcp_service.system import (  # noqa: F401, E402
     resources as system_resources,
 )
 from superset.mcp_service.system.tool import (  # noqa: F401, E402
+    get_database_info,
     get_instance_info,
     get_schema,
     health_check,
+    list_databases,
 )
 
 

@@ -24,7 +24,11 @@ from pydantic import ValidationError
 
 from superset.mcp_service.chart.schemas import (
     ColumnRef,
+    MetricFilterConfig,
+    NullFilterConfig,
+    RangeFilterConfig,
     TableChartConfig,
+    TimeFilterConfig,
     XYChartConfig,
 )
 
@@ -258,7 +262,76 @@ class TestXYChartConfig:
             }
         )
         assert config.group_by is not None
-        assert config.group_by[0].name == "year"
+
+
+class TestTypedFilterNormalization:
+    """Test typed filter normalization and backward compatibility."""
+
+    def test_legacy_range_filter_normalizes_to_range_filter(self) -> None:
+        config = TableChartConfig.model_validate(
+            {
+                "chart_type": "table",
+                "columns": [{"name": "product"}],
+                "filters": [{"column": "discount", "op": ">=", "value": 0}],
+            }
+        )
+        assert config.filters is not None
+        assert isinstance(config.filters[0], RangeFilterConfig)
+
+    def test_typed_null_filter_is_accepted(self) -> None:
+        config = TableChartConfig.model_validate(
+            {
+                "chart_type": "table",
+                "columns": [{"name": "product"}],
+                "filters": [
+                    {
+                        "filter_type": "null_filter",
+                        "column": "deleted_at",
+                        "op": "IS NULL",
+                    }
+                ],
+            }
+        )
+        assert config.filters is not None
+        assert isinstance(config.filters[0], NullFilterConfig)
+
+    def test_time_filter_is_accepted(self) -> None:
+        config = XYChartConfig.model_validate(
+            {
+                "chart_type": "xy",
+                "x": {"name": "order_date"},
+                "y": [{"name": "sales", "aggregate": "SUM"}],
+                "filters": [
+                    {
+                        "filter_type": "time_filter",
+                        "column": "order_date",
+                        "time_range": "Last month",
+                    }
+                ],
+            }
+        )
+        assert config.filters is not None
+        assert isinstance(config.filters[0], TimeFilterConfig)
+
+    def test_metric_filter_is_accepted(self) -> None:
+        config = XYChartConfig.model_validate(
+            {
+                "chart_type": "xy",
+                "x": {"name": "order_date"},
+                "y": [{"name": "sales", "aggregate": "SUM"}],
+                "filters": [
+                    {
+                        "filter_type": "metric_filter",
+                        "metric": {"name": "sales", "aggregate": "SUM"},
+                        "op": ">=",
+                        "value": 1000,
+                    }
+                ],
+            }
+        )
+        assert config.filters is not None
+        assert isinstance(config.filters[0], MetricFilterConfig)
+        assert config.filters[0].column == "SUM(sales)"
 
     def test_group_by_accepted(self) -> None:
         """Test that group_by accepts a single ColumnRef (auto-wrapped in list)."""

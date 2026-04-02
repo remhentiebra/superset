@@ -77,6 +77,32 @@ To run the container, simply run: `docker compose up`
 After waiting several minutes for Superset initialization to finish, you can open a browser and view [`http://localhost:8088`](http://localhost:8088)
 to start your journey.
 
+### Running the local stack with MCP
+
+To boot a minimal local stack with PostgreSQL, Redis, the Superset web UI, and the MCP service from the custom `mcp` image target, run:
+
+```bash
+make up-mcp-detached
+```
+
+The MCP stack uses its own Compose project name so it gets isolated Docker volumes and does not reuse an older local metadata database from the default dev stack.
+
+This starts:
+
+- Superset web on [`http://localhost:8088`](http://localhost:8088)
+- MCP on [`http://localhost:5008/mcp`](http://localhost:5008/mcp)
+- PostgreSQL on `localhost:5432`
+
+Default local credentials remain `admin` / `admin`.
+
+Useful follow-up commands:
+
+```bash
+make logs-mcp
+make ps-mcp
+make down-mcp
+```
+
 ### Running Multiple Instances
 
 If you need to run multiple Superset instances simultaneously (e.g., different branches or clones), use the make targets which automatically find available ports:
@@ -113,6 +139,66 @@ Don't forget to reload the page to take the new frontend into account though.
 ## Production
 
 It is possible to run Superset in non-development mode by using [`docker-compose-non-dev.yml`](../docker-compose-non-dev.yml). This file excludes the volumes needed for development.
+
+### Building a custom production image with MCP support
+
+The root [`Dockerfile`](../Dockerfile) includes an `mcp` target that builds Superset from this source tree and adds:
+
+- `fastmcp`
+- PostgreSQL support via `psycopg2-binary`
+- ClickHouse support via `clickhouse-connect`
+
+The image keeps the default production web server command from the `lean` target. To run the MCP service, use a command override when starting the container.
+
+Build a local image:
+
+```bash
+docker build --target mcp -t <dockerhub-user>/superset-mcp:<tag> .
+```
+
+Verify the MCP CLI is available:
+
+```bash
+docker run --rm \
+  -e SUPERSET_SECRET_KEY=test-secret \
+  <dockerhub-user>/superset-mcp:<tag> \
+  superset mcp --help
+```
+
+Verify Python imports for the required runtime dependencies:
+
+```bash
+docker run --rm \
+  <dockerhub-user>/superset-mcp:<tag> \
+  python -c "import fastmcp, psycopg2, clickhouse_connect; print('ok')"
+```
+
+Run the MCP service from the same image:
+
+```bash
+docker run --rm \
+  -p 5008:5008 \
+  -e SUPERSET_SECRET_KEY=test-secret \
+  <dockerhub-user>/superset-mcp:<tag> \
+  superset mcp run --host 0.0.0.0 --port 5008
+```
+
+Push a tagged image to Docker Hub:
+
+```bash
+docker push <dockerhub-user>/superset-mcp:<tag>
+```
+
+If you are building on one platform and deploying to `linux/amd64` later, publish with Buildx:
+
+```bash
+docker buildx build \
+  --target mcp \
+  --platform linux/amd64 \
+  -t <dockerhub-user>/superset-mcp:<tag> \
+  --push \
+  .
+```
 
 ## Resource Constraints
 

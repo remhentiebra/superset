@@ -19,10 +19,16 @@ from .add_chart_to_existing_dashboard import add_chart_to_existing_dashboard
 from .generate_dashboard import generate_dashboard
 from .get_dashboard_info import get_dashboard_info
 from .list_dashboards import list_dashboards
+from .remove_chart_from_dashboard import remove_chart_from_dashboard
+from .update_dashboard import update_dashboard
+from .upsert_dashboard_native_filters import upsert_dashboard_native_filters
 
 __all__ = [
     "list_dashboards",
     "get_dashboard_info",
     "generate_dashboard",
     "add_chart_to_existing_dashboard",
+    "update_dashboard",
+    "remove_chart_from_dashboard",
+    "upsert_dashboard_native_filters",
 ]

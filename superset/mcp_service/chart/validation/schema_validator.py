@@ -25,12 +25,238 @@ from typing import Any, Dict, Tuple
 
 from pydantic import ValidationError as PydanticValidationError
 
+from superset.mcp_service.chart.registry import (
+    CHART_TYPE_CAPABILITIES,
+    SUPPORTED_TYPED_CHART_TYPES,
+)
 from superset.mcp_service.chart.schemas import (
     GenerateChartRequest,
 )
 from superset.mcp_service.common.error_schemas import ChartGenerationError
 
 logger = logging.getLogger(__name__)
+
+
+def _typed_chart_union_error(chart_type: str) -> ChartGenerationError | None:
+    """Return an explicit validation error for a known typed chart type."""
+    error_map = {
+        "xy": ChartGenerationError(
+            error_type="xy_validation_error",
+            message="XY chart configuration validation failed",
+            details=(
+                "The XY chart configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'x' field exists with {'name': 'column_name'}",
+                "Ensure 'y' field is an array: [{'name': 'metric', "
+                "'aggregate': 'SUM'}]",
+                "Check that all column names are strings",
+                "Verify aggregate functions are valid: SUM, COUNT, AVG, MIN, MAX",
+            ],
+            error_code="XY_VALIDATION_ERROR",
+        ),
+        "table": ChartGenerationError(
+            error_type="table_validation_error",
+            message="Table chart configuration validation failed",
+            details=(
+                "The table chart configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'columns' field is an array of column specifications",
+                "Each column needs {'name': 'column_name'}",
+                "Optional: add 'aggregate' for metrics",
+                "Example: 'columns': [{'name': 'product'}, {'name': 'sales', "
+                "'aggregate': 'SUM'}]",
+            ],
+            error_code="TABLE_VALIDATION_ERROR",
+        ),
+        "handlebars": ChartGenerationError(
+            error_type="handlebars_validation_error",
+            message="Handlebars chart configuration validation failed",
+            details=(
+                "The handlebars chart configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'handlebars_template' is a non-empty string",
+                "For aggregate mode: add 'metrics' with aggregate functions",
+                "For raw mode: set 'query_mode': 'raw' and add 'columns'",
+                "Example: {'chart_type': 'handlebars', 'handlebars_template': "
+                "'<ul>{{#each data}}<li>{{this.name}}</li>{{/each}}</ul>', "
+                "'metrics': [{'name': 'sales', 'aggregate': 'SUM'}]}",
+            ],
+            error_code="HANDLEBARS_VALIDATION_ERROR",
+        ),
+        "funnel": ChartGenerationError(
+            error_type="funnel_validation_error",
+            message="Funnel chart configuration validation failed",
+            details=(
+                "The funnel chart configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'dimension' exists with {'name': 'stage_column'}",
+                "Ensure 'metric' exists with {'name': 'metric_column', "
+                "'aggregate': 'SUM'}",
+                "Optional: configure percent_calculation_type, show_labels, "
+                "and row_limit",
+            ],
+            error_code="FUNNEL_VALIDATION_ERROR",
+        ),
+        "big_number": ChartGenerationError(
+            error_type="big_number_validation_error",
+            message="Big number chart configuration validation failed",
+            details=(
+                "The big number configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'metric' exists with {'name': 'metric_column', "
+                "'aggregate': 'SUM'}",
+                "If show_trend_line=true, also provide 'x': {'name': 'date_column'}",
+                "Optional: configure time_grain, number_format, and font sizes",
+            ],
+            error_code="BIG_NUMBER_VALIDATION_ERROR",
+        ),
+        "gauge": ChartGenerationError(
+            error_type="gauge_validation_error",
+            message="Gauge chart configuration validation failed",
+            details=(
+                "The gauge configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'metric' exists with {'name': 'metric_column', "
+                "'aggregate': 'SUM'}",
+                "Optional: add 'dimension' and gauge display settings like "
+                "start_angle or split_number",
+            ],
+            error_code="GAUGE_VALIDATION_ERROR",
+        ),
+        "heatmap": ChartGenerationError(
+            error_type="heatmap_validation_error",
+            message="Heatmap chart configuration validation failed",
+            details=(
+                "The heatmap configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'x' and 'y' dimensions exist with {'name': 'column_name'}",
+                "Ensure 'metric' exists with {'name': 'metric_column', "
+                "'aggregate': 'SUM'}",
+                "Optional: configure normalize_across, sort_x_axis, and sort_y_axis",
+            ],
+            error_code="HEATMAP_VALIDATION_ERROR",
+        ),
+        "treemap": ChartGenerationError(
+            error_type="treemap_validation_error",
+            message="Treemap chart configuration validation failed",
+            details=(
+                "The treemap configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'dimensions' is a non-empty array of columns",
+                "Ensure 'metric' exists with {'name': 'metric_column', "
+                "'aggregate': 'SUM'}",
+                "Optional: configure label_type, show_upper_labels, and row_limit",
+            ],
+            error_code="TREEMAP_VALIDATION_ERROR",
+        ),
+        "sunburst": ChartGenerationError(
+            error_type="sunburst_validation_error",
+            message="Sunburst chart configuration validation failed",
+            details=(
+                "The sunburst configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'dimensions' is a non-empty array of columns",
+                "Ensure 'metric' exists with {'name': 'metric_column', "
+                "'aggregate': 'SUM'}",
+                "Optional: configure show_labels_threshold and linear_color_scheme",
+            ],
+            error_code="SUNBURST_VALIDATION_ERROR",
+        ),
+        "sankey": ChartGenerationError(
+            error_type="sankey_validation_error",
+            message="Sankey chart configuration validation failed",
+            details=(
+                "The sankey configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'source' and 'target' exist with {'name': 'column_name'}",
+                "Ensure 'metric' exists with {'name': 'metric_column', "
+                "'aggregate': 'SUM'}",
+                "Optional: configure row_limit and color_scheme",
+            ],
+            error_code="SANKEY_VALIDATION_ERROR",
+        ),
+        "word_cloud": ChartGenerationError(
+            error_type="word_cloud_validation_error",
+            message="Word cloud configuration validation failed",
+            details=(
+                "The word cloud configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'series' exists with {'name': 'word_column'}",
+                "Ensure 'metric' exists with {'name': 'metric_column', "
+                "'aggregate': 'COUNT'}",
+                "Optional: configure rotation, size_from, size_to, and row_limit",
+            ],
+            error_code="WORD_CLOUD_VALIDATION_ERROR",
+        ),
+        "world_map": ChartGenerationError(
+            error_type="world_map_validation_error",
+            message="World map configuration validation failed",
+            details=(
+                "The world map configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'entity' exists with {'name': 'country_column'}",
+                "Ensure 'metric' exists with {'name': 'metric_column', "
+                "'aggregate': 'SUM'}",
+                "Optional: configure secondary_metric, country_fieldtype, "
+                "and show_bubbles",
+            ],
+            error_code="WORLD_MAP_VALIDATION_ERROR",
+        ),
+        "box_plot": ChartGenerationError(
+            error_type="box_plot_validation_error",
+            message="Box plot configuration validation failed",
+            details=(
+                "The box plot configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'x' exists with {'name': 'column_name'}",
+                "Ensure 'metric' exists with {'name': 'metric_column', "
+                "'aggregate': 'COUNT'}",
+                "Optional: configure group_by, whisker_options, and time_grain",
+            ],
+            error_code="BOX_PLOT_VALIDATION_ERROR",
+        ),
+        "bubble": ChartGenerationError(
+            error_type="bubble_validation_error",
+            message="Bubble chart configuration validation failed",
+            details=(
+                "The bubble chart configuration is missing required fields "
+                "or has invalid structure"
+            ),
+            suggestions=[
+                "Ensure 'x', 'y', and 'size' are metric columns with aggregates",
+                "Ensure 'series' exists with {'name': 'grouping_column'}",
+                "Optional: configure entity, max_bubble_size, and axis formats",
+            ],
+            error_code="BUBBLE_VALIDATION_ERROR",
+        ),
+    }
+    return error_map.get(chart_type)
 
 
 class SchemaValidator:
@@ -123,6 +349,9 @@ class SchemaValidator:
         # Check chart_type early
         chart_type = config.get("chart_type")
         if not chart_type:
+            createable_types = ", ".join(
+                f"'{name}'" for name in SUPPORTED_TYPED_CHART_TYPES
+            )
             return False, ChartGenerationError(
                 error_type="missing_chart_type",
                 message="Missing required field: chart_type",
@@ -131,10 +360,14 @@ class SchemaValidator:
                     "Add 'chart_type': 'xy' for line/bar/area/scatter charts",
                     "Add 'chart_type': 'table' for table visualizations",
                     "Add 'chart_type': 'pie' for pie or donut charts",
+                    "Add 'chart_type': 'funnel' for stage conversion analysis",
+                    "Add 'chart_type': 'big_number' for KPIs with optional trendline",
+                    "Add 'chart_type': 'treemap' for hierarchical charts",
+                    f"Supported typed chart types: {createable_types}",
                     "Add 'chart_type': 'pivot_table' for interactive pivot tables",
                     "Add 'chart_type': 'mixed_timeseries' for dual-series time charts",
                     "Add 'chart_type': 'handlebars' for custom HTML template charts",
-                    "Add 'chart_type': 'big_number' for big number display",
+                    "Add 'chart_type': 'bubble' for x/y/size comparisons",
                     "Example: 'config': {'chart_type': 'xy', ...}",
                 ],
                 error_code="MISSING_CHART_TYPE",
@@ -155,11 +388,25 @@ class SchemaValidator:
             "pivot_table": SchemaValidator._pre_validate_pivot_table_config,
             "mixed_timeseries": SchemaValidator._pre_validate_mixed_timeseries_config,
             "handlebars": SchemaValidator._pre_validate_handlebars_config,
+            "funnel": SchemaValidator._pre_validate_funnel_config,
             "big_number": SchemaValidator._pre_validate_big_number_config,
+            "gauge": SchemaValidator._pre_validate_gauge_config,
+            "heatmap": SchemaValidator._pre_validate_heatmap_config,
+            "treemap": SchemaValidator._pre_validate_treemap_config,
+            "sunburst": SchemaValidator._pre_validate_sunburst_config,
+            "sankey": SchemaValidator._pre_validate_sankey_config,
+            "word_cloud": SchemaValidator._pre_validate_word_cloud_config,
+            "world_map": SchemaValidator._pre_validate_world_map_config,
+            "box_plot": SchemaValidator._pre_validate_box_plot_config,
+            "bubble": SchemaValidator._pre_validate_bubble_config,
         }
 
         if not isinstance(chart_type, str) or chart_type not in chart_type_validators:
-            valid_types = ", ".join(chart_type_validators.keys())
+            valid_types = ", ".join(sorted(SUPPORTED_TYPED_CHART_TYPES))
+            supported_summaries = [
+                f"{cap.chart_type}: {cap.summary}"
+                for cap in CHART_TYPE_CAPABILITIES.values()
+            ]
             return False, ChartGenerationError(
                 error_type="invalid_chart_type",
                 message=f"Invalid chart_type: '{chart_type}'",
@@ -169,10 +416,21 @@ class SchemaValidator:
                     "Use 'chart_type': 'xy' for line, bar, area, or scatter charts",
                     "Use 'chart_type': 'table' for tabular data display",
                     "Use 'chart_type': 'pie' for pie or donut charts",
+                    "Use 'chart_type': 'funnel' for stage-based conversion analysis",
+                    "Use 'chart_type': 'big_number' for a KPI metric",
+                    "Use 'chart_type': 'gauge' for a gauge-style KPI",
+                    "Use 'chart_type': 'heatmap' for a two-dimensional metric matrix",
+                    "Use 'chart_type': 'treemap' for hierarchical rectangles",
+                    "Use 'chart_type': 'sunburst' for hierarchical radial charts",
+                    "Use 'chart_type': 'sankey' for source-to-target flows",
+                    "Use 'chart_type': 'word_cloud' for text frequency displays",
+                    "Use 'chart_type': 'world_map' for geographic comparisons",
+                    "Use 'chart_type': 'box_plot' for distributions and outliers",
+                    "Use 'chart_type': 'bubble' for x/y/size metric comparisons",
                     "Use 'chart_type': 'pivot_table' for interactive pivot tables",
                     "Use 'chart_type': 'mixed_timeseries' for dual-series time charts",
                     "Use 'chart_type': 'handlebars' for custom HTML template charts",
-                    "Use 'chart_type': 'big_number' for big number display",
+                    *supported_summaries[:3],
                     "Check spelling and ensure lowercase",
                 ],
                 error_code="INVALID_CHART_TYPE",
@@ -290,6 +548,350 @@ class SchemaValidator:
         return True, None
 
     @staticmethod
+    def _pre_validate_funnel_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate funnel chart configuration."""
+        missing_fields = []
+        if "dimension" not in config and "groupby" not in config:
+            missing_fields.append("'dimension' (funnel stage column)")
+        if "metric" not in config:
+            missing_fields.append("'metric' (value metric)")
+
+        if missing_fields:
+            return False, ChartGenerationError(
+                error_type="missing_funnel_fields",
+                message=(
+                    f"Funnel chart missing required fields: {', '.join(missing_fields)}"
+                ),
+                details="Funnel charts require a stage dimension and a metric.",
+                suggestions=[
+                    "Add 'dimension': {'name': 'status'} for the funnel stages",
+                    "Add 'metric': {'name': 'count', 'aggregate': 'COUNT'}",
+                    "Optional: percent_calculation_type='first_step' "
+                    "or 'previous_step'",
+                ],
+                error_code="MISSING_FUNNEL_FIELDS",
+            )
+        return True, None
+
+    @staticmethod
+    def _pre_validate_big_number_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate big number chart configuration."""
+        if "metric" not in config:
+            return False, ChartGenerationError(
+                error_type="missing_big_number_metric",
+                message="Big number chart missing required field: metric",
+                details="Big number charts require a metric to display as the KPI.",
+                suggestions=[
+                    "Add 'metric': {'name': 'revenue', 'aggregate': 'SUM'}",
+                    "Optional: set 'show_trend_line': true and provide "
+                    "'x' for a trendline",
+                ],
+                error_code="MISSING_BIG_NUMBER_METRIC",
+            )
+
+        if (
+            config.get("show_trend_line")
+            and "x" not in config
+            and "x_axis" not in config
+        ):
+            return False, ChartGenerationError(
+                error_type="missing_big_number_x",
+                message="Big number charts with trendline require an x column",
+                details=(
+                    "When show_trend_line is true, the chart needs "
+                    "a temporal x-axis column."
+                ),
+                suggestions=[
+                    "Add 'x': {'name': 'order_date'} when show_trend_line=true",
+                    "Or remove 'show_trend_line' for a KPI-only chart",
+                ],
+                error_code="MISSING_BIG_NUMBER_X",
+            )
+        return True, None
+
+    @staticmethod
+    def _pre_validate_gauge_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate gauge chart configuration."""
+        if "metric" not in config:
+            return False, ChartGenerationError(
+                error_type="missing_gauge_metric",
+                message="Gauge chart missing required field: metric",
+                details="Gauge charts require a metric to render the gauge value.",
+                suggestions=[
+                    "Add 'metric': {'name': 'count', 'aggregate': 'COUNT'}",
+                    "Optional: add 'dimension' to group the gauge by a category",
+                ],
+                error_code="MISSING_GAUGE_METRIC",
+            )
+        return True, None
+
+    @staticmethod
+    def _pre_validate_heatmap_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate heatmap chart configuration."""
+        missing_fields = []
+        if "x" not in config and "x_axis" not in config:
+            missing_fields.append("'x' (X-axis dimension)")
+        if "y" not in config and "groupby" not in config and "dimension" not in config:
+            missing_fields.append("'y' (Y-axis dimension)")
+        if "metric" not in config:
+            missing_fields.append("'metric' (heatmap metric)")
+
+        if missing_fields:
+            return False, ChartGenerationError(
+                error_type="missing_heatmap_fields",
+                message=(
+                    "Heatmap chart missing required fields: "
+                    f"{', '.join(missing_fields)}"
+                ),
+                details="Heatmap charts require x and y dimensions plus a metric.",
+                suggestions=[
+                    "Add 'x': {'name': 'product_line'}",
+                    "Add 'y': {'name': 'deal_size'}",
+                    "Add 'metric': {'name': 'count', 'aggregate': 'COUNT'}",
+                ],
+                error_code="MISSING_HEATMAP_FIELDS",
+            )
+        return True, None
+
+    @staticmethod
+    def _pre_validate_treemap_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate treemap chart configuration."""
+        missing_fields = []
+        if (
+            "dimensions" not in config
+            and "groupby" not in config
+            and "columns" not in config
+        ):
+            missing_fields.append("'dimensions' (hierarchy columns)")
+        if "metric" not in config:
+            missing_fields.append("'metric' (treemap metric)")
+
+        if missing_fields:
+            return False, ChartGenerationError(
+                error_type="missing_treemap_fields",
+                message=(
+                    "Treemap chart missing required fields: "
+                    f"{', '.join(missing_fields)}"
+                ),
+                details=(
+                    "Treemap charts require at least one hierarchy dimension "
+                    "and a metric."
+                ),
+                suggestions=[
+                    "Add 'dimensions': [{'name': 'year'}, {'name': 'product_line'}]",
+                    "Add 'metric': {'name': 'count', 'aggregate': 'COUNT'}",
+                ],
+                error_code="MISSING_TREEMAP_FIELDS",
+            )
+        return True, None
+
+    @staticmethod
+    def _pre_validate_sunburst_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate sunburst chart configuration."""
+        missing_fields = []
+        if (
+            "dimensions" not in config
+            and "groupby" not in config
+            and "columns" not in config
+        ):
+            missing_fields.append("'dimensions' (hierarchy columns)")
+        if "metric" not in config:
+            missing_fields.append("'metric' (sunburst metric)")
+
+        if missing_fields:
+            return False, ChartGenerationError(
+                error_type="missing_sunburst_fields",
+                message=(
+                    "Sunburst chart missing required fields: "
+                    f"{', '.join(missing_fields)}"
+                ),
+                details=(
+                    "Sunburst charts require at least one hierarchy dimension "
+                    "and a metric."
+                ),
+                suggestions=[
+                    "Add 'dimensions': [{'name': 'year'}, {'name': 'product_line'}]",
+                    "Add 'metric': {'name': 'count', 'aggregate': 'COUNT'}",
+                ],
+                error_code="MISSING_SUNBURST_FIELDS",
+            )
+        return True, None
+
+    @staticmethod
+    def _pre_validate_sankey_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate sankey chart configuration."""
+        missing_fields = []
+        if "source" not in config:
+            missing_fields.append("'source' (source dimension)")
+        if "target" not in config:
+            missing_fields.append("'target' (target dimension)")
+        if "metric" not in config:
+            missing_fields.append("'metric' (flow metric)")
+
+        if missing_fields:
+            return False, ChartGenerationError(
+                error_type="missing_sankey_fields",
+                message=(
+                    f"Sankey chart missing required fields: {', '.join(missing_fields)}"
+                ),
+                details=(
+                    "Sankey charts require source and target dimensions plus a metric."
+                ),
+                suggestions=[
+                    "Add 'source': {'name': 'product_line'}",
+                    "Add 'target': {'name': 'deal_size'}",
+                    "Add 'metric': {'name': 'count', 'aggregate': 'COUNT'}",
+                ],
+                error_code="MISSING_SANKEY_FIELDS",
+            )
+        return True, None
+
+    @staticmethod
+    def _pre_validate_word_cloud_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate word cloud chart configuration."""
+        missing_fields = []
+        if (
+            "series" not in config
+            and "dimension" not in config
+            and "groupby" not in config
+        ):
+            missing_fields.append("'series' (word dimension)")
+        if "metric" not in config:
+            missing_fields.append("'metric' (word size metric)")
+
+        if missing_fields:
+            return False, ChartGenerationError(
+                error_type="missing_word_cloud_fields",
+                message=(
+                    "Word cloud chart missing required fields: "
+                    f"{', '.join(missing_fields)}"
+                ),
+                details=(
+                    "Word cloud charts require a displayed word dimension and a metric."
+                ),
+                suggestions=[
+                    "Add 'series': {'name': 'customer_name'}",
+                    "Add 'metric': {'name': 'count', 'aggregate': 'COUNT'}",
+                ],
+                error_code="MISSING_WORD_CLOUD_FIELDS",
+            )
+        return True, None
+
+    @staticmethod
+    def _pre_validate_world_map_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate world map chart configuration."""
+        missing_fields = []
+        if "entity" not in config and "country" not in config:
+            missing_fields.append("'entity' (country/entity column)")
+        if "metric" not in config:
+            missing_fields.append("'metric' (map metric)")
+
+        if missing_fields:
+            return False, ChartGenerationError(
+                error_type="missing_world_map_fields",
+                message=(
+                    "World map chart missing required fields: "
+                    f"{', '.join(missing_fields)}"
+                ),
+                details=(
+                    "World map charts require a geographic entity column and a metric."
+                ),
+                suggestions=[
+                    "Add 'entity': {'name': 'country_code'}",
+                    "Add 'metric': {'name': 'population', 'aggregate': 'SUM'}",
+                    "Optional: add 'secondary_metric' and 'show_bubbles': true",
+                ],
+                error_code="MISSING_WORLD_MAP_FIELDS",
+            )
+        return True, None
+
+    @staticmethod
+    def _pre_validate_box_plot_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate box plot chart configuration."""
+        missing_fields = []
+        if "x" not in config and "x_axis" not in config and "columns" not in config:
+            missing_fields.append("'x' (distribution axis column)")
+        if "metric" not in config and "metrics" not in config:
+            missing_fields.append("'metric' (distribution metric)")
+
+        if missing_fields:
+            return False, ChartGenerationError(
+                error_type="missing_box_plot_fields",
+                message=(
+                    "Box plot chart missing required fields: "
+                    f"{', '.join(missing_fields)}"
+                ),
+                details="Box plot charts require a dimension column and a metric.",
+                suggestions=[
+                    "Add 'x': {'name': 'order_date'}",
+                    "Add 'metric': {'name': 'count', 'aggregate': 'COUNT'}",
+                    "Optional: add 'group_by': [{'name': 'product_line'}]",
+                ],
+                error_code="MISSING_BOX_PLOT_FIELDS",
+            )
+        return True, None
+
+    @staticmethod
+    def _pre_validate_bubble_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate bubble chart configuration."""
+        missing_fields = []
+        for field_name, description in (
+            ("x", "'x' (x-axis metric)"),
+            ("y", "'y' (y-axis metric)"),
+            ("size", "'size' (bubble size metric)"),
+        ):
+            if field_name not in config:
+                missing_fields.append(description)
+        if (
+            "series" not in config
+            and "dimension" not in config
+            and "groupby" not in config
+        ):
+            missing_fields.append("'series' (grouping dimension)")
+
+        if missing_fields:
+            return False, ChartGenerationError(
+                error_type="missing_bubble_fields",
+                message=(
+                    f"Bubble chart missing required fields: {', '.join(missing_fields)}"
+                ),
+                details=(
+                    "Bubble charts require x, y, and size metrics plus "
+                    "a grouping dimension."
+                ),
+                suggestions=[
+                    "Add 'x': {'name': 'quantity_ordered', 'aggregate': 'SUM'}",
+                    "Add 'y': {'name': 'country', 'aggregate': 'COUNT_DISTINCT'}",
+                    "Add 'size': {'name': 'count', 'aggregate': 'COUNT'}",
+                    "Add 'series': {'name': 'product_line'}",
+                ],
+                error_code="MISSING_BUBBLE_FIELDS",
+            )
+        return True, None
+
+    @staticmethod
     def _pre_validate_handlebars_config(
         config: Dict[str, Any],
     ) -> Tuple[bool, ChartGenerationError | None]:
@@ -361,75 +963,6 @@ class SchemaValidator:
                     "Or use query_mode='raw' with 'columns' for individual rows",
                 ],
                 error_code="MISSING_AGGREGATE_METRICS",
-            )
-
-        return True, None
-
-    @staticmethod
-    def _pre_validate_big_number_config(
-        config: Dict[str, Any],
-    ) -> Tuple[bool, ChartGenerationError | None]:
-        """Pre-validate big number chart configuration."""
-        if "metric" not in config:
-            return False, ChartGenerationError(
-                error_type="missing_metric",
-                message="Big Number chart missing required field: metric",
-                details="Big Number charts require a 'metric' field "
-                "specifying the value to display",
-                suggestions=[
-                    "Add 'metric' with name and aggregate: "
-                    "{'name': 'revenue', 'aggregate': 'SUM'}",
-                    "The aggregate function is required (SUM, COUNT, AVG, MIN, MAX)",
-                    "Example: {'chart_type': 'big_number', "
-                    "'metric': {'name': 'sales', 'aggregate': 'SUM'}}",
-                ],
-                error_code="MISSING_BIG_NUMBER_METRIC",
-            )
-
-        metric = config.get("metric", {})
-        if not isinstance(metric, dict):
-            return False, ChartGenerationError(
-                error_type="invalid_metric_type",
-                message="Big Number metric must be a dict with 'name' and 'aggregate'",
-                details="The 'metric' field must be an object, "
-                f"got {type(metric).__name__}",
-                suggestions=[
-                    "Use a dict: {'name': 'col', 'aggregate': 'SUM'}",
-                    "Valid aggregates: SUM, COUNT, AVG, MIN, MAX",
-                ],
-                error_code="INVALID_BIG_NUMBER_METRIC_TYPE",
-            )
-        if not metric.get("aggregate") and not metric.get("saved_metric"):
-            return False, ChartGenerationError(
-                error_type="missing_metric_aggregate",
-                message="Big Number metric must include an aggregate function "
-                "or reference a saved metric",
-                details="The metric must have an 'aggregate' field "
-                "or 'saved_metric': true",
-                suggestions=[
-                    "Add 'aggregate' to your metric: "
-                    "{'name': 'col', 'aggregate': 'SUM'}",
-                    "Or use a saved metric: "
-                    "{'name': 'total_sales', 'saved_metric': true}",
-                    "Valid aggregates: SUM, COUNT, AVG, MIN, MAX",
-                ],
-                error_code="MISSING_BIG_NUMBER_AGGREGATE",
-            )
-
-        show_trendline = config.get("show_trendline", False)
-        temporal_column = config.get("temporal_column")
-        if show_trendline and not temporal_column:
-            return False, ChartGenerationError(
-                error_type="missing_temporal_column",
-                message="Trendline requires a temporal column",
-                details="When 'show_trendline' is True, a "
-                "'temporal_column' must be specified",
-                suggestions=[
-                    "Add 'temporal_column': 'date_column_name'",
-                    "Or set 'show_trendline': false for number only",
-                    "Use get_dataset_info to find temporal columns",
-                ],
-                error_code="MISSING_TEMPORAL_COLUMN",
             )
 
         return True, None
@@ -547,74 +1080,9 @@ class SchemaValidator:
                 # This is the generic union error - provide better message
                 config = request_data.get("config", {})
                 chart_type = config.get("chart_type", "unknown")
-
-                if chart_type == "xy":
-                    return ChartGenerationError(
-                        error_type="xy_validation_error",
-                        message="XY chart configuration validation failed",
-                        details="The XY chart configuration is missing required "
-                        "fields or has invalid structure",
-                        suggestions=[
-                            "Ensure 'x' field exists with {'name': 'column_name'}",
-                            "Ensure 'y' field is an array: [{'name': 'metric', "
-                            "'aggregate': 'SUM'}]",
-                            "Check that all column names are strings",
-                            "Verify aggregate functions are valid: SUM, COUNT, AVG, "
-                            "MIN, MAX",
-                        ],
-                        error_code="XY_VALIDATION_ERROR",
-                    )
-                elif chart_type == "table":
-                    return ChartGenerationError(
-                        error_type="table_validation_error",
-                        message="Table chart configuration validation failed",
-                        details="The table chart configuration is missing required "
-                        "fields or has invalid structure",
-                        suggestions=[
-                            "Ensure 'columns' field is an array of column "
-                            "specifications",
-                            "Each column needs {'name': 'column_name'}",
-                            "Optional: add 'aggregate' for metrics",
-                            "Example: 'columns': [{'name': 'product'}, {'name': "
-                            "'sales', 'aggregate': 'SUM'}]",
-                        ],
-                        error_code="TABLE_VALIDATION_ERROR",
-                    )
-                elif chart_type == "handlebars":
-                    return ChartGenerationError(
-                        error_type="handlebars_validation_error",
-                        message="Handlebars chart configuration validation failed",
-                        details="The handlebars chart configuration is missing "
-                        "required fields or has invalid structure",
-                        suggestions=[
-                            "Ensure 'handlebars_template' is a non-empty string",
-                            "For aggregate mode: add 'metrics' with aggregate "
-                            "functions",
-                            "For raw mode: set 'query_mode': 'raw' and add 'columns'",
-                            "Example: {'chart_type': 'handlebars', "
-                            "'handlebars_template': '<ul>{{#each data}}<li>"
-                            "{{this.name}}</li>{{/each}}</ul>', "
-                            "'metrics': [{'name': 'sales', 'aggregate': 'SUM'}]}",
-                        ],
-                        error_code="HANDLEBARS_VALIDATION_ERROR",
-                    )
-                elif chart_type == "big_number":
-                    return ChartGenerationError(
-                        error_type="big_number_validation_error",
-                        message="Big Number chart configuration validation failed",
-                        details="The Big Number chart configuration is "
-                        "missing required fields or has invalid "
-                        "structure",
-                        suggestions=[
-                            "Ensure 'metric' field has 'name' and 'aggregate'",
-                            "Example: 'metric': {'name': 'revenue', "
-                            "'aggregate': 'SUM'}",
-                            "For trendline: add 'show_trendline': true "
-                            "and 'temporal_column': 'date_col'",
-                            "Without trendline: just provide the metric",
-                        ],
-                        error_code="BIG_NUMBER_VALIDATION_ERROR",
-                    )
+                typed_error = _typed_chart_union_error(str(chart_type))
+                if typed_error is not None:
+                    return typed_error
 
         # Default enhanced error
         error_details = []

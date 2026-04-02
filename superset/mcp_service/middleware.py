@@ -793,6 +793,9 @@ class FieldPermissionsMiddleware(Middleware):
     TOOL_OBJECT_TYPE_MAP = {
         "list_datasets": "dataset",
         "get_dataset_info": "dataset",
+        "create_virtual_dataset": "dataset",
+        "update_dataset_metrics": "dataset",
+        "update_dataset_calculated_columns": "dataset",
         "list_charts": "chart",
         "get_chart_info": "chart",
         "get_chart_data": "chart",
@@ -803,6 +806,9 @@ class FieldPermissionsMiddleware(Middleware):
         "get_dashboard_info": "dashboard",
         "generate_dashboard": "dashboard",
         "add_chart_to_existing_dashboard": "dashboard",
+        "update_dashboard": "dashboard",
+        "remove_chart_from_dashboard": "dashboard",
+        "upsert_dashboard_native_filters": "dashboard",
     }
 
     async def on_call_tool(

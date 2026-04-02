@@ -29,18 +29,29 @@ from pydantic import ValidationError
 
 from superset.mcp_service.chart.chart_utils import (
     generate_chart_name,
+    map_big_number_config,
     map_config_to_form_data,
+    map_funnel_config,
+    map_gauge_config,
+    map_heatmap_config,
     map_mixed_timeseries_config,
     map_pie_config,
     map_pivot_table_config,
 )
 from superset.mcp_service.chart.schemas import (
     AxisConfig,
+    BigNumberChartConfig,
     ColumnRef,
     FilterConfig,
+    FunnelChartConfig,
+    GaugeChartConfig,
+    HeatmapChartConfig,
     MixedTimeseriesChartConfig,
+    NullFilterConfig,
     PieChartConfig,
     PivotTableChartConfig,
+    RangeFilterConfig,
+    TimeFilterConfig,
 )
 from superset.mcp_service.chart.validation.schema_validator import SchemaValidator
 
@@ -718,6 +729,127 @@ class TestMapMixedTimeseriesConfig:
 
 
 # ============================================================
+# Funnel / Big Number / Gauge / Heatmap Tests
+# ============================================================
+
+
+class TestAdditionalChartTypeSchemas:
+    """Test schema validation for newly supported chart types."""
+
+    def test_funnel_chart_config(self) -> None:
+        config = FunnelChartConfig(
+            chart_type="funnel",
+            dimension=ColumnRef(name="status"),
+            metric=ColumnRef(name="opportunity_id", aggregate="COUNT"),
+            filters=[TimeFilterConfig(column="created_at", time_range="Last month")],
+        )
+        assert config.dimension.name == "status"
+        assert config.metric.aggregate == "COUNT"
+        assert config.filters is not None
+
+    def test_big_number_trend_requires_x(self) -> None:
+        with pytest.raises(ValidationError):
+            BigNumberChartConfig(
+                chart_type="big_number",
+                metric=ColumnRef(name="revenue", aggregate="SUM"),
+                show_trend_line=True,
+            )
+
+    def test_gauge_chart_config(self) -> None:
+        config = GaugeChartConfig(
+            chart_type="gauge",
+            metric=ColumnRef(name="count", aggregate="COUNT"),
+            dimension=ColumnRef(name="segment"),
+        )
+        assert config.metric.aggregate == "COUNT"
+        assert config.dimension is not None
+
+    def test_heatmap_chart_config(self) -> None:
+        config = HeatmapChartConfig(
+            chart_type="heatmap",
+            x=ColumnRef(name="product_line"),
+            y=ColumnRef(name="deal_size"),
+            metric=ColumnRef(name="revenue", aggregate="SUM"),
+            filters=[RangeFilterConfig(column="discount", op=">=", value=0)],
+        )
+        assert config.x.name == "product_line"
+        assert config.y.name == "deal_size"
+        assert config.filters is not None
+
+
+class TestAdditionalChartTypeMappings:
+    """Test form_data mapping for newly supported chart types."""
+
+    def test_map_funnel_config(self) -> None:
+        config = FunnelChartConfig(
+            chart_type="funnel",
+            dimension=ColumnRef(name="status"),
+            metric=ColumnRef(name="opportunity_id", aggregate="COUNT"),
+            percent_calculation_type="previous_step",
+        )
+        result = map_funnel_config(config)
+
+        assert result["viz_type"] == "funnel"
+        assert result["groupby"] == ["status"]
+        assert result["metric"]["aggregate"] == "COUNT"
+        assert result["percent_calculation_type"] == "previous_step"
+
+    def test_map_big_number_with_trend(self) -> None:
+        config = BigNumberChartConfig(
+            chart_type="big_number",
+            metric=ColumnRef(name="revenue", aggregate="SUM"),
+            show_trend_line=True,
+            x=ColumnRef(name="order_date"),
+            time_grain="P1M",
+            filters=[TimeFilterConfig(column="order_date", time_range="Last year")],
+        )
+        result = map_big_number_config(config)
+
+        assert result["viz_type"] == "big_number"
+        assert result["x_axis"] == "order_date"
+        assert result["time_grain_sqla"] == "P1M"
+        assert result["adhoc_filters"][0]["operator"] == "TEMPORAL_RANGE"
+
+    def test_map_big_number_total(self) -> None:
+        config = BigNumberChartConfig(
+            chart_type="big_number",
+            metric=ColumnRef(name="count", aggregate="COUNT"),
+        )
+        result = map_big_number_config(config)
+
+        assert result["viz_type"] == "big_number_total"
+        assert "x_axis" not in result
+
+    def test_map_gauge_config(self) -> None:
+        config = GaugeChartConfig(
+            chart_type="gauge",
+            metric=ColumnRef(name="count", aggregate="COUNT"),
+            dimension=ColumnRef(name="deal_size"),
+            filters=[NullFilterConfig(column="closed_at", op="IS NULL")],
+        )
+        result = map_gauge_config(config)
+
+        assert result["viz_type"] == "gauge_chart"
+        assert result["groupby"] == ["deal_size"]
+        assert result["adhoc_filters"][0]["operator"] == "IS NULL"
+
+    def test_map_heatmap_config(self) -> None:
+        config = HeatmapChartConfig(
+            chart_type="heatmap",
+            x=ColumnRef(name="product_line"),
+            y=ColumnRef(name="deal_size"),
+            metric=ColumnRef(name="count", aggregate="COUNT"),
+            show_values=True,
+        )
+        result = map_heatmap_config(config)
+
+        assert result["viz_type"] == "heatmap_v2"
+        assert result["x_axis"] == "product_line"
+        assert result["groupby"] == "deal_size"
+        assert result["show_values"] is True
+
+
+# ============================================================
 # map_config_to_form_data Dispatch Tests
 # ============================================================
 
@@ -754,6 +886,41 @@ class TestMapConfigToFormDataDispatch:
         )
         result = map_config_to_form_data(config, dataset_id=1)
         assert result["viz_type"] == "mixed_timeseries"
+
+    def test_dispatches_funnel_config(self) -> None:
+        config = FunnelChartConfig(
+            chart_type="funnel",
+            dimension=ColumnRef(name="status"),
+            metric=ColumnRef(name="opportunity_id", aggregate="COUNT"),
+        )
+        result = map_config_to_form_data(config)
+        assert result["viz_type"] == "funnel"
+
+    def test_dispatches_big_number_config(self) -> None:
+        config = BigNumberChartConfig(
+            chart_type="big_number",
+            metric=ColumnRef(name="count", aggregate="COUNT"),
+        )
+        result = map_config_to_form_data(config)
+        assert result["viz_type"] == "big_number_total"
+
+    def test_dispatches_gauge_config(self) -> None:
+        config = GaugeChartConfig(
+            chart_type="gauge",
+            metric=ColumnRef(name="count", aggregate="COUNT"),
+        )
+        result = map_config_to_form_data(config)
+        assert result["viz_type"] == "gauge_chart"
+
+    def test_dispatches_heatmap_config(self) -> None:
+        config = HeatmapChartConfig(
+            chart_type="heatmap",
+            x=ColumnRef(name="product_line"),
+            y=ColumnRef(name="deal_size"),
+            metric=ColumnRef(name="count", aggregate="COUNT"),
+        )
+        result = map_config_to_form_data(config)
+        assert result["viz_type"] == "heatmap_v2"
 
 
 # ============================================================
@@ -801,6 +968,41 @@ class TestGenerateChartNameNewTypes:
         result = generate_chart_name(config)
         assert result == "revenue + orders"
 
+    def test_funnel_chart_name(self) -> None:
+        config = FunnelChartConfig(
+            chart_type="funnel",
+            dimension=ColumnRef(name="status"),
+            metric=ColumnRef(name="opportunity_id", aggregate="COUNT"),
+        )
+        result = generate_chart_name(config)
+        assert result == "status Funnel"
+
+    def test_big_number_chart_name(self) -> None:
+        config = BigNumberChartConfig(
+            chart_type="big_number",
+            metric=ColumnRef(name="revenue", aggregate="SUM", label="Revenue"),
+        )
+        result = generate_chart_name(config)
+        assert result == "Revenue KPI"
+
+    def test_gauge_chart_name(self) -> None:
+        config = GaugeChartConfig(
+            chart_type="gauge",
+            metric=ColumnRef(name="count", aggregate="COUNT", label="Deals"),
+        )
+        result = generate_chart_name(config)
+        assert result == "Deals Gauge"
+
+    def test_heatmap_chart_name(self) -> None:
+        config = HeatmapChartConfig(
+            chart_type="heatmap",
+            x=ColumnRef(name="product_line"),
+            y=ColumnRef(name="deal_size"),
+            metric=ColumnRef(name="revenue", aggregate="SUM"),
+        )
+        result = generate_chart_name(config)
+        assert result == "revenue Heatmap"
+
 
 # ============================================================
 # Schema Validator Pre-Validation Tests
@@ -847,6 +1049,57 @@ class TestSchemaValidatorNewTypes:
             },
         }
         is_valid, request, error = SchemaValidator.validate_request(data)
+        assert is_valid is True
+        assert error is None
+
+    def test_funnel_chart_type_accepted(self) -> None:
+        data = {
+            "dataset_id": 1,
+            "config": {
+                "chart_type": "funnel",
+                "dimension": {"name": "status"},
+                "metric": {"name": "opportunity_id", "aggregate": "COUNT"},
+            },
+        }
+        is_valid, _, error = SchemaValidator.validate_request(data)
+        assert is_valid is True
+        assert error is None
+
+    def test_big_number_chart_type_accepted(self) -> None:
+        data = {
+            "dataset_id": 1,
+            "config": {
+                "chart_type": "big_number",
+                "metric": {"name": "revenue", "aggregate": "SUM"},
+            },
+        }
+        is_valid, _, error = SchemaValidator.validate_request(data)
+        assert is_valid is True
+        assert error is None
+
+    def test_gauge_chart_type_accepted(self) -> None:
+        data = {
+            "dataset_id": 1,
+            "config": {
+                "chart_type": "gauge",
+                "metric": {"name": "count", "aggregate": "COUNT"},
+            },
+        }
+        is_valid, _, error = SchemaValidator.validate_request(data)
+        assert is_valid is True
+        assert error is None
+
+    def test_heatmap_chart_type_accepted(self) -> None:
+        data = {
+            "dataset_id": 1,
+            "config": {
+                "chart_type": "heatmap",
+                "x": {"name": "product_line"},
+                "y": {"name": "deal_size"},
+                "metric": {"name": "revenue", "aggregate": "SUM"},
+            },
+        }
+        is_valid, _, error = SchemaValidator.validate_request(data)
         assert is_valid is True
         assert error is None
 
@@ -955,6 +1208,7 @@ class TestSchemaValidatorNewTypes:
         assert is_valid is False
         assert error is not None
         assert "pie" in (error.details or "").lower()
+        assert "funnel" in (error.details or "").lower()
         assert "pivot_table" in (error.details or "").lower()
         assert "mixed_timeseries" in (error.details or "").lower()
 

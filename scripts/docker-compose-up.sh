@@ -39,9 +39,12 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Generate project name from directory name (sanitized for Docker)
+# Generate project name from directory name (sanitized for Docker).
+# Respect an existing COMPOSE_PROJECT_NAME override so specialized stacks
+# such as the MCP local stack can keep isolated volumes and networks.
 DIR_NAME=$(basename "$REPO_ROOT")
-PROJECT_NAME=$(echo "$DIR_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//' | sed 's/-$//')
+DEFAULT_PROJECT_NAME=$(echo "$DIR_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//' | sed 's/-$//')
+PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$DEFAULT_PROJECT_NAME}"
 
 # Function to check if a port is available
 is_port_available() {
@@ -96,6 +99,7 @@ find_and_claim_port() {
 # Base ports (defaults from docker-compose.yml)
 BASE_NGINX=80
 BASE_SUPERSET=8088
+BASE_MCP=5008
 BASE_NODE=9000
 BASE_WEBSOCKET=8080
 BASE_CYPRESS=8081
@@ -106,6 +110,7 @@ BASE_REDIS=6379
 echo "🔍 Finding available ports..."
 find_and_claim_port $BASE_NGINX NGINX_PORT
 find_and_claim_port $BASE_SUPERSET SUPERSET_PORT
+find_and_claim_port $BASE_MCP MCP_PORT
 find_and_claim_port $BASE_NODE NODE_PORT
 find_and_claim_port $BASE_WEBSOCKET WEBSOCKET_PORT
 find_and_claim_port $BASE_CYPRESS CYPRESS_PORT
@@ -134,6 +139,7 @@ if docker compose ps --status running 2>/dev/null | grep -q "$PROJECT_NAME"; the
     # Containers are running - get actual ports
     NGINX_PORT=$(get_running_port nginx 80 $NGINX_PORT)
     SUPERSET_PORT=$(get_running_port superset 8088 $SUPERSET_PORT)
+    MCP_PORT=$(get_running_port superset-mcp 5008 $MCP_PORT)
     NODE_PORT=$(get_running_port superset-node 9000 $NODE_PORT)
     WEBSOCKET_PORT=$(get_running_port superset-websocket 8080 $WEBSOCKET_PORT)
     DATABASE_PORT=$(get_running_port db 5432 $DATABASE_PORT)
@@ -142,6 +148,7 @@ fi
 
 export NGINX_PORT
 export SUPERSET_PORT
+export MCP_PORT
 export NODE_PORT
 export WEBSOCKET_PORT
 export CYPRESS_PORT
@@ -154,6 +161,7 @@ print_connection_info() {
     echo "🐳 Superset ($PROJECT_NAME):"
     echo "   Dev Server: http://localhost:$NODE_PORT  ← Use this for development"
     echo "   Superset:   http://localhost:$SUPERSET_PORT"
+    echo "   MCP:        http://localhost:$MCP_PORT/mcp"
     echo "   Nginx:      http://localhost:$NGINX_PORT"
     echo "   WebSocket:  localhost:$WEBSOCKET_PORT"
     echo "   Database:   localhost:$DATABASE_PORT"
@@ -186,6 +194,7 @@ case "${1:-}" in
         echo "export COMPOSE_PROJECT_NAME='$PROJECT_NAME'"
         echo "export NGINX_PORT=$NGINX_PORT"
         echo "export SUPERSET_PORT=$SUPERSET_PORT"
+        echo "export MCP_PORT=$MCP_PORT"
         echo "export NODE_PORT=$NODE_PORT"
         echo "export WEBSOCKET_PORT=$WEBSOCKET_PORT"
         echo "export CYPRESS_PORT=$CYPRESS_PORT"

@@ -22,10 +22,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from superset.constants import NO_TIME_RANGE
 from superset.mcp_service.chart.chart_utils import (
     _add_adhoc_filters,
-    _ensure_temporal_adhoc_filter,
     adhoc_filters_to_query_filters,
     configure_temporal_handling,
     create_metric_object,
@@ -43,7 +41,11 @@ from superset.mcp_service.chart.schemas import (
     ColumnRef,
     FilterConfig,
     LegendConfig,
+    MetricFilterConfig,
+    NullFilterConfig,
+    RangeFilterConfig,
     TableChartConfig,
+    TimeFilterConfig,
     XYChartConfig,
 )
 from superset.utils.core import FilterOperator, GenericDataType
@@ -272,6 +274,74 @@ class TestMapTableConfig:
         assert result["adhoc_filters"][2]["operator"] == "IN"
         assert result["adhoc_filters"][2]["comparator"] == ["Sports", "Racing"]
 
+    def test_map_table_config_with_range_filter(self) -> None:
+        """Test range filters map to adhoc filters."""
+        config = TableChartConfig(
+            chart_type="table",
+            columns=[ColumnRef(name="discount")],
+            filters=[RangeFilterConfig(column="discount", op="BETWEEN", value=[0, 25])],
+        )
+
+        result = map_table_config(config)
+
+        assert result["adhoc_filters"][0]["operator"] == "BETWEEN"
+        assert result["adhoc_filters"][0]["comparator"] == [0, 25]
+
+    def test_map_table_config_with_null_filter(self) -> None:
+        """Test null filters map to adhoc filters."""
+        config = TableChartConfig(
+            chart_type="table",
+            columns=[ColumnRef(name="deleted_at")],
+            filters=[NullFilterConfig(column="deleted_at", op="IS NULL")],
+        )
+
+        result = map_table_config(config)
+
+        assert result["adhoc_filters"][0]["operator"] == "IS NULL"
+        assert result["adhoc_filters"][0]["comparator"] is None
+
+    def test_map_table_config_with_time_filter(self) -> None:
+        """Test time filters map to Superset temporal adhoc filters."""
+        config = TableChartConfig(
+            chart_type="table",
+            columns=[ColumnRef(name="order_date")],
+            filters=[
+                TimeFilterConfig(
+                    column="order_date",
+                    time_range="Last quarter",
+                    time_grain="P1M",
+                )
+            ],
+        )
+
+        result = map_table_config(config)
+
+        assert result["adhoc_filters"][0]["operator"] == "TEMPORAL_RANGE"
+        assert result["adhoc_filters"][0]["comparator"] == "Last quarter"
+        assert result["time_grain_sqla"] == "P1M"
+
+    def test_map_xy_config_with_metric_filter(self) -> None:
+        """Test metric filters map to HAVING adhoc filters."""
+        config = XYChartConfig(
+            chart_type="xy",
+            x=ColumnRef(name="order_date"),
+            y=[ColumnRef(name="sales", aggregate="SUM")],
+            filters=[
+                MetricFilterConfig(
+                    metric=ColumnRef(name="sales", aggregate="SUM"),
+                    op=">=",
+                    value=1000,
+                )
+            ],
+        )
+
+        result = map_xy_config(config)
+
+        assert result["adhoc_filters"][0]["clause"] == "HAVING"
+        assert result["adhoc_filters"][0]["subject"] == "SUM(sales)"
+        assert result["adhoc_filters"][0]["operator"] == ">="
+        assert result["adhoc_filters"][0]["comparator"] == 1000
+
     def test_map_table_config_with_sort(self) -> None:
         """Test table config mapping with sort"""
         config = TableChartConfig(
@@ -426,6 +496,23 @@ class TestAddAdhocFilters:
         _add_adhoc_filters(form_data, [])
 
         assert "adhoc_filters" not in form_data
+
+    def test_metric_filters_use_having_clause(self) -> None:
+        """Test metric filters are tagged as HAVING filters."""
+        form_data: dict[str, Any] = {}
+        filters = [
+            MetricFilterConfig(
+                metric=ColumnRef(name="sales", aggregate="SUM"),
+                op="BETWEEN",
+                value=[100, 500],
+            )
+        ]
+
+        _add_adhoc_filters(form_data, filters)
+
+        assert form_data["adhoc_filters"][0]["clause"] == "HAVING"
+        assert form_data["adhoc_filters"][0]["subject"] == "SUM(sales)"
+        assert form_data["adhoc_filters"][0]["comparator"] == [100, 500]
 
 
 class TestMapXYConfig:
@@ -667,13 +754,10 @@ class TestMapXYConfig:
         result = map_xy_config(config)
 
         assert "adhoc_filters" in result
-        # User filter + auto-added TEMPORAL_RANGE filter for temporal x-axis
-        assert len(result["adhoc_filters"]) == 2
+        assert len(result["adhoc_filters"]) == 1
         assert result["adhoc_filters"][0]["subject"] == "region"
         assert result["adhoc_filters"][0]["operator"] == "=="
         assert result["adhoc_filters"][0]["comparator"] == "US"
-        assert result["adhoc_filters"][1]["operator"] == "TEMPORAL_RANGE"
-        assert result["adhoc_filters"][1]["subject"] == "date"
 
     @patch("superset.mcp_service.chart.chart_utils.is_column_truly_temporal")
     def test_map_xy_config_row_limit(self, mock_is_temporal) -> None:
@@ -1364,14 +1448,7 @@ class TestMapXYConfigWithNonTemporalColumn:
         assert result["time_grain_sqla"] == "P1W"
         assert result["granularity_sqla"] == "created_at"
         assert "x_axis_sort_series_type" not in result
-        # Temporal x-axis should have a TEMPORAL_RANGE adhoc filter
-        temporal_filters = [
-            f
-            for f in result.get("adhoc_filters", [])
-            if f.get("operator") == "TEMPORAL_RANGE"
-        ]
-        assert len(temporal_filters) == 1
-        assert temporal_filters[0]["subject"] == "created_at"
+        assert "adhoc_filters" not in result
 
     @patch("superset.mcp_service.chart.chart_utils.is_column_truly_temporal")
     def test_non_temporal_ignores_time_grain_param(self, mock_is_temporal) -> None:
@@ -1393,78 +1470,25 @@ class TestMapXYConfigWithNonTemporalColumn:
         assert result["x_axis_sort_series_type"] == "name"
 
 
-class TestEnsureTemporalAdhocFilter:
-    """Test _ensure_temporal_adhoc_filter helper and its integration in map_xy_config"""
-
-    def test_adds_filter_to_empty_form_data(self) -> None:
-        """Test adds TEMPORAL_RANGE filter when no adhoc_filters exist"""
-        form_data: dict[str, Any] = {}
-        _ensure_temporal_adhoc_filter(form_data, "order_date")
-
-        assert len(form_data["adhoc_filters"]) == 1
-        f = form_data["adhoc_filters"][0]
-        assert f["operator"] == FilterOperator.TEMPORAL_RANGE.value
-        assert f["subject"] == "order_date"
-        assert f["comparator"] == NO_TIME_RANGE
-        assert f["expressionType"] == "SIMPLE"
-        assert f["clause"] == "WHERE"
-
-    def test_appends_to_existing_filters(self) -> None:
-        """Test appends temporal filter after existing user filters"""
-        form_data: dict[str, Any] = {
-            "adhoc_filters": [
-                {"subject": "region", "operator": "==", "comparator": "US"}
-            ]
-        }
-        _ensure_temporal_adhoc_filter(form_data, "order_date")
-
-        assert len(form_data["adhoc_filters"]) == 2
-        assert form_data["adhoc_filters"][0]["subject"] == "region"
-        assert (
-            form_data["adhoc_filters"][1]["operator"]
-            == FilterOperator.TEMPORAL_RANGE.value
-        )
-
-    def test_does_not_duplicate_existing_temporal_filter(self) -> None:
-        """Test skips adding if a TEMPORAL_RANGE filter already exists for the column"""
-        form_data: dict[str, Any] = {
-            "adhoc_filters": [
-                {
-                    "subject": "order_date",
-                    "operator": FilterOperator.TEMPORAL_RANGE.value,
-                    "comparator": "Last 7 days",
-                }
-            ]
-        }
-        _ensure_temporal_adhoc_filter(form_data, "order_date")
-
-        # Should still be just 1 filter (no duplicate)
-        assert len(form_data["adhoc_filters"]) == 1
-
-    def test_adds_filter_for_different_column(self) -> None:
-        """Test adds filter when existing temporal filter is on a different column"""
-        form_data: dict[str, Any] = {
-            "adhoc_filters": [
-                {
-                    "subject": "created_at",
-                    "operator": FilterOperator.TEMPORAL_RANGE.value,
-                    "comparator": NO_TIME_RANGE,
-                }
-            ]
-        }
-        _ensure_temporal_adhoc_filter(form_data, "order_date")
-
-        assert len(form_data["adhoc_filters"]) == 2
+class TestTemporalFiltersInXYConfig:
+    """Test explicit time filters and temporal handling in map_xy_config."""
 
     @patch("superset.mcp_service.chart.chart_utils.is_column_truly_temporal")
-    def test_temporal_x_axis_adds_filter_in_map_xy(self, mock_is_temporal) -> None:
-        """Test map_xy_config adds TEMPORAL_RANGE filter for temporal x-axis"""
+    def test_temporal_x_axis_keeps_explicit_time_filter(self, mock_is_temporal) -> None:
+        """Test map_xy_config preserves explicit temporal filters."""
         mock_is_temporal.return_value = True
         config = XYChartConfig(
             chart_type="xy",
             x=ColumnRef(name="order_date"),
             y=[ColumnRef(name="revenue", aggregate="SUM")],
             kind="bar",
+            filters=[
+                TimeFilterConfig(
+                    column="order_date",
+                    time_range="Last 7 days",
+                    time_grain="P1D",
+                )
+            ],
         )
 
         result = map_xy_config(config, dataset_id=123)
@@ -1476,7 +1500,8 @@ class TestEnsureTemporalAdhocFilter:
         ]
         assert len(temporal_filters) == 1
         assert temporal_filters[0]["subject"] == "order_date"
-        assert temporal_filters[0]["comparator"] == NO_TIME_RANGE
+        assert temporal_filters[0]["comparator"] == "Last 7 days"
+        assert result["time_grain_sqla"] == "P1D"
 
     @patch("superset.mcp_service.chart.chart_utils.is_column_truly_temporal")
     def test_non_temporal_x_axis_no_temporal_filter(self, mock_is_temporal) -> None:

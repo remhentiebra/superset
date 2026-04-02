@@ -66,6 +66,19 @@ CLASS_PERMISSION_ATTR = "_class_permission_name"
 METHOD_PERMISSION_ATTR = "_method_permission_name"
 
 
+def _is_context_param_annotation(annotation: Any, param_name: str) -> bool:
+    """Return whether a parameter represents the injected FastMCP context."""
+    return (
+        param_name == "ctx"
+        or annotation == "Context"
+        or (
+            isinstance(annotation, str)
+            and (annotation == "Context" or annotation.endswith(".Context"))
+        )
+        or (hasattr(annotation, "__name__") and annotation.__name__ == "Context")
+    )
+
+
 class MCPPermissionDeniedError(Exception):
     """Raised when user lacks required RBAC permission for an MCP tool."""
 
@@ -536,9 +549,8 @@ def mcp_auth_hook(tool_func: F) -> F:  # noqa: C901
 
     _tool_sig = inspect.signature(tool_func)
     _needs_ctx = any(
-        p.annotation is FMContext
-        or (hasattr(p.annotation, "__name__") and p.annotation.__name__ == "Context")
-        for p in _tool_sig.parameters.values()
+        p.annotation is FMContext or _is_context_param_annotation(p.annotation, p_name)
+        for p_name, p in _tool_sig.parameters.items()
     )
 
     def _inject_ctx(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -670,9 +682,8 @@ def mcp_auth_hook(tool_func: F) -> F:  # noqa: C901
         new_params = []
         for _name, param in _tool_sig.parameters.items():
             # Skip ctx parameter - FastMCP tools don't expose it to clients
-            if param.annotation is FMContext or (
-                hasattr(param.annotation, "__name__")
-                and param.annotation.__name__ == "Context"
+            if param.annotation is FMContext or _is_context_param_annotation(
+                param.annotation, _name
             ):
                 continue
             new_params.append(param)

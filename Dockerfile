@@ -237,6 +237,22 @@ RUN python -m compileall /app/superset
 USER superset
 
 ######################################################################
+# MCP production image - lean + MCP and database drivers
+######################################################################
+FROM lean AS mcp
+
+USER root
+
+RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
+    uv pip install .[fastmcp,postgres,clickhouse]
+
+RUN python -c "import fastmcp, psycopg2, clickhouse_connect"
+
+EXPOSE 5008
+
+USER superset
+
+######################################################################
 # Dev image...
 ######################################################################
 FROM python-common AS dev

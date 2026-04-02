@@ -17,12 +17,16 @@
 
 """System tools for MCP service."""
 
+from .get_database_info import get_database_info
 from .get_instance_info import get_instance_info
 from .get_schema import get_schema
 from .health_check import health_check
+from .list_databases import list_databases
 
 __all__ = [
+    "get_database_info",
     "health_check",
     "get_instance_info",
     "get_schema",
+    "list_databases",
 ]

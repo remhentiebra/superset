@@ -230,6 +230,155 @@ def get_chart_configs_resource() -> str:
         },
     }
 
+    advanced_chart_configs = {
+        "funnel_chart": {
+            "description": "Funnel chart for stage conversion analysis",
+            "config": {
+                "chart_type": "funnel",
+                "dimension": {"name": "status", "label": "Stage"},
+                "metric": {"name": "opportunity_id", "aggregate": "COUNT"},
+                "percent_calculation_type": "first_step",
+                "show_labels": True,
+                "filters": [
+                    {
+                        "filter_type": "time_filter",
+                        "column": "created_at",
+                        "time_range": "Last quarter",
+                    }
+                ],
+            },
+            "use_cases": ["Conversion funnels", "Pipeline stage drop-off"],
+        },
+        "big_number_chart": {
+            "description": "Big number KPI with monthly trendline",
+            "config": {
+                "chart_type": "big_number",
+                "metric": {"name": "revenue", "aggregate": "SUM", "label": "Revenue"},
+                "show_trend_line": True,
+                "x": {"name": "order_date", "label": "Order Date"},
+                "time_grain": "P1M",
+                "filters": [{"column": "status", "op": "!=", "value": "cancelled"}],
+            },
+            "use_cases": ["Executive KPIs", "Headline metrics with trend context"],
+        },
+        "gauge_chart": {
+            "description": "Gauge chart for KPI thresholds by segment",
+            "config": {
+                "chart_type": "gauge",
+                "metric": {"name": "satisfaction_score", "aggregate": "AVG"},
+                "dimension": {"name": "segment", "label": "Segment"},
+                "split_number": 8,
+                "show_progress": True,
+            },
+            "use_cases": ["Target attainment", "Service level KPIs"],
+        },
+        "heatmap_chart": {
+            "description": "Heatmap chart for two-dimensional comparisons",
+            "config": {
+                "chart_type": "heatmap",
+                "x": {"name": "product_line", "label": "Product Line"},
+                "y": {"name": "deal_size", "label": "Deal Size"},
+                "metric": {"name": "revenue", "aggregate": "SUM"},
+                "normalize_across": "heatmap",
+                "show_values": True,
+                "filters": [
+                    {
+                        "filter_type": "range_filter",
+                        "column": "discount",
+                        "op": ">=",
+                        "value": 0,
+                    }
+                ],
+            },
+            "use_cases": ["Matrix comparisons", "Density and intensity patterns"],
+        },
+        "treemap_chart": {
+            "description": "Treemap chart for hierarchical part-to-whole analysis",
+            "config": {
+                "chart_type": "treemap",
+                "dimensions": [
+                    {"name": "year", "label": "Year"},
+                    {"name": "product_line", "label": "Product Line"},
+                ],
+                "metric": {"name": "count", "aggregate": "COUNT"},
+                "label_type": "key_value",
+                "show_upper_labels": True,
+            },
+            "use_cases": ["Hierarchies", "Nested category comparisons"],
+        },
+        "sunburst_chart": {
+            "description": "Sunburst chart for radial hierarchy exploration",
+            "config": {
+                "chart_type": "sunburst",
+                "dimensions": [
+                    {"name": "year", "label": "Year"},
+                    {"name": "product_line", "label": "Product Line"},
+                ],
+                "metric": {"name": "count", "aggregate": "COUNT"},
+                "show_labels_threshold": 5,
+            },
+            "use_cases": ["Radial hierarchies", "Proportion by nested level"],
+        },
+        "sankey_chart": {
+            "description": "Sankey chart for source-to-target flow analysis",
+            "config": {
+                "chart_type": "sankey",
+                "source": {"name": "product_line", "label": "Source"},
+                "target": {"name": "deal_size", "label": "Target"},
+                "metric": {"name": "count", "aggregate": "COUNT"},
+            },
+            "use_cases": ["Flow diagrams", "Transition analysis"],
+        },
+        "word_cloud_chart": {
+            "description": "Word cloud chart for term prominence",
+            "config": {
+                "chart_type": "word_cloud",
+                "series": {"name": "customer_name", "label": "Word"},
+                "metric": {"name": "count", "aggregate": "COUNT"},
+                "rotation": "square",
+                "size_from": 10,
+                "size_to": 70,
+            },
+            "use_cases": ["Text prominence", "Category frequency"],
+        },
+        "world_map_chart": {
+            "description": "World map chart for country-level comparisons",
+            "config": {
+                "chart_type": "world_map",
+                "entity": {"name": "country_code", "label": "Country"},
+                "metric": {"name": "population", "aggregate": "SUM"},
+                "country_fieldtype": "cca3",
+                "show_bubbles": True,
+            },
+            "use_cases": ["Geographic comparisons", "Country-level KPIs"],
+        },
+        "box_plot_chart": {
+            "description": "Box plot chart for distribution and outlier analysis",
+            "config": {
+                "chart_type": "box_plot",
+                "x": {"name": "order_date", "label": "Order Date"},
+                "group_by": [{"name": "product_line", "label": "Product Line"}],
+                "metric": {"name": "count", "aggregate": "COUNT"},
+                "time_grain": "P1D",
+                "whisker_options": "Tukey",
+            },
+            "use_cases": ["Distribution analysis", "Outlier detection"],
+        },
+        "bubble_chart": {
+            "description": "Bubble chart for x/y/size metric comparisons",
+            "config": {
+                "chart_type": "bubble",
+                "x": {"name": "quantity_ordered", "aggregate": "SUM"},
+                "y": {"name": "country", "aggregate": "COUNT_DISTINCT"},
+                "size": {"name": "count", "aggregate": "COUNT"},
+                "series": {"name": "product_line", "label": "Product Line"},
+                "entity": {"name": "deal_size", "label": "Deal Size"},
+                "max_bubble_size": 25,
+            },
+            "use_cases": ["Multi-metric comparison", "Portfolio segmentation"],
+        },
+    }
+
     # Best practices
     best_practices = {
         "xy_charts": [
@@ -251,18 +400,25 @@ def get_chart_configs_resource() -> str:
             "Use generate_explore_link for preview, generate_chart for saving",
             "Each column label must be unique across the entire configuration",
             "Column names must match: ^[a-zA-Z0-9_][a-zA-Z0-9_ \\-\\.]*$",
+            "Filters accept value_filter, range_filter, null_filter, "
+            "time_filter, and metric_filter variants",
+            "Use dimensions in order for hierarchy charts like treemap and sunburst",
+            "Bubble charts expect x, y, and size metrics plus a grouping dimension",
         ],
     }
 
     resource_data = {
         "xy_chart_configs": xy_chart_configs,
         "table_chart_configs": table_chart_configs,
+        "advanced_chart_configs": advanced_chart_configs,
         "best_practices": best_practices,
         "usage_notes": [
             "All examples are valid ChartConfig objects that pass validation",
             "Modify column names and labels to match your actual dataset",
             "Use get_dataset_info to verify column names before charting",
             "For complete schema details, see the generate_chart tool parameters",
+            "Use typed filters instead of raw adhoc_filters or SQL expressions",
+            "Use metric_filter for aggregate HAVING-style thresholds on chart metrics",
         ],
     }
 

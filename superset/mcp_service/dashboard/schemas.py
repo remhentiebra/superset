@@ -83,7 +83,12 @@ if TYPE_CHECKING:
     from superset.models.dashboard import Dashboard
 
 from superset.daos.base import ColumnOperator, ColumnOperatorEnum
-from superset.mcp_service.chart.schemas import ChartInfo, serialize_chart_object
+from superset.mcp_service.chart.schemas import (
+    ChartFilterConfig,
+    ChartInfo,
+    MetricFilterConfig,
+    serialize_chart_object,
+)
 from superset.mcp_service.common.cache_schemas import MetadataCacheControl
 from superset.mcp_service.constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from superset.mcp_service.system.schemas import (
@@ -471,6 +476,368 @@ class GenerateDashboardResponse(BaseModel):
     )
     dashboard_url: str | None = Field(None, description="URL to view the dashboard")
     error: str | None = Field(None, description="Error message, if creation failed")
+
+
+class DashboardMutationResponse(BaseModel):
+    """Shared response for dashboard mutation tools."""
+
+    dashboard: DashboardInfo | None = Field(
+        None, description="Updated dashboard information, if successful"
+    )
+    dashboard_url: str | None = Field(
+        None, description="URL to view the updated dashboard"
+    )
+    error: DashboardError | None = Field(
+        None, description="Structured error details, if operation failed"
+    )
+
+
+class UpdateDashboardRequest(BaseModel):
+    """Typed request schema for updating dashboard metadata and layout."""
+
+    identifier: int | str = Field(
+        ...,
+        description="Dashboard identifier - can be numeric ID, UUID string, or slug",
+    )
+    dashboard_title: str | None = Field(
+        None,
+        description="Updated dashboard title",
+        max_length=500,
+    )
+    description: str | None = Field(
+        None,
+        description="Updated dashboard description",
+        max_length=5000,
+    )
+    slug: str | None = Field(
+        None,
+        description="Updated dashboard slug",
+        max_length=255,
+    )
+    css: str | None = Field(
+        None,
+        description="Updated dashboard CSS",
+        max_length=50000,
+    )
+    published: bool | None = Field(
+        None,
+        description="Whether the dashboard should be published",
+    )
+    cross_filters_enabled: bool | None = Field(
+        None,
+        description="Toggle dashboard cross-filter interactions",
+    )
+    chart_ids: List[int] | None = Field(
+        None,
+        description=(
+            "Optional exact chart IDs and order for rebuilding the dashboard "
+            "layout as a simple auto-grid. When omitted, the current layout is kept."
+        ),
+        min_length=1,
+    )
+    layout_rows: List["DashboardLayoutRow"] | None = Field(
+        None,
+        description=(
+            "Optional explicit row layout. Each row lists chart IDs to place "
+            "together. When provided, this replaces chart_ids auto-grid layout."
+        ),
+        min_length=1,
+    )
+    chart_dimensions: List["DashboardChartDimensions"] | None = Field(
+        None,
+        description=(
+            "Optional chart size updates applied to the current or rebuilt layout "
+            "without requiring raw position_json edits."
+        ),
+        min_length=1,
+    )
+    chart_moves: List["DashboardChartMove"] | None = Field(
+        None,
+        description=(
+            "Optional chart move/reorder actions applied to the current layout "
+            "without rebuilding the full dashboard."
+        ),
+        min_length=1,
+    )
+
+    @field_validator("chart_ids")
+    @classmethod
+    def validate_unique_chart_ids(cls, value: List[int] | None) -> List[int] | None:
+        if value and len(value) != len(set(value)):
+            raise ValueError("chart_ids must not contain duplicates")
+        return value
+
+    @model_validator(mode="after")
+    def validate_layout_inputs(self) -> "UpdateDashboardRequest":
+        if self.chart_ids is not None and self.layout_rows is not None:
+            raise ValueError("Use either chart_ids or layout_rows, not both")
+
+        if self.layout_rows:
+            flattened = [
+                chart_id for row in self.layout_rows for chart_id in row.chart_ids
+            ]
+            if len(flattened) != len(set(flattened)):
+                raise ValueError("layout_rows must not contain duplicate chart IDs")
+
+        if self.chart_dimensions:
+            chart_ids = [item.chart_id for item in self.chart_dimensions]
+            if len(chart_ids) != len(set(chart_ids)):
+                raise ValueError(
+                    "chart_dimensions must not contain duplicate chart IDs"
+                )
+
+        if self.chart_moves:
+            chart_ids = [item.chart_id for item in self.chart_moves]
+            if len(chart_ids) != len(set(chart_ids)):
+                raise ValueError("chart_moves must not contain duplicate chart IDs")
+            if self.chart_ids is not None or self.layout_rows is not None:
+                raise ValueError(
+                    "chart_moves cannot be combined with chart_ids or layout_rows"
+                )
+
+        return self
+
+
+class RemoveChartFromDashboardRequest(BaseModel):
+    """Typed request schema for removing a chart from a dashboard."""
+
+    identifier: int | str = Field(
+        ...,
+        description="Dashboard identifier - can be numeric ID, UUID string, or slug",
+    )
+    chart_id: int = Field(..., description="Chart ID to remove from the dashboard")
+
+
+class NativeFilterTarget(BaseModel):
+    """Dataset/column target for a native filter."""
+
+    dataset_id: int | str = Field(
+        ...,
+        description="Target dataset identifier (ID or UUID)",
+    )
+    column: str = Field(..., description="Target column name", min_length=1)
+
+
+class DashboardLayoutRow(BaseModel):
+    """Typed row definition for explicit dashboard layouts."""
+
+    chart_ids: List[int] = Field(
+        ...,
+        description="Chart IDs to place in this row from left to right",
+        min_length=1,
+    )
+
+    @field_validator("chart_ids")
+    @classmethod
+    def validate_unique_chart_ids(cls, value: List[int]) -> List[int]:
+        if len(value) != len(set(value)):
+            raise ValueError("Dashboard row chart_ids must not contain duplicates")
+        return value
+
+
+class DashboardChartDimensions(BaseModel):
+    """Typed chart sizing update."""
+
+    chart_id: int = Field(..., description="Chart ID to resize in the layout")
+    width: int | None = Field(
+        None,
+        description="Chart width in dashboard grid columns (1-12)",
+        ge=1,
+        le=12,
+    )
+    height: int | None = Field(
+        None,
+        description="Chart height in dashboard grid units",
+        ge=1,
+        le=100,
+    )
+
+    @model_validator(mode="after")
+    def validate_dimensions_present(self) -> "DashboardChartDimensions":
+        if self.width is None and self.height is None:
+            raise ValueError("At least one of width or height must be provided")
+        return self
+
+
+class DashboardChartMove(BaseModel):
+    """Typed chart move/reorder action for dashboard layouts."""
+
+    chart_id: int = Field(..., description="Chart ID to move in the dashboard layout")
+    row_index: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Zero-based destination row index. Use the current row count to append "
+            "a row."
+        ),
+    )
+    column_index: int = Field(
+        ...,
+        ge=0,
+        description="Zero-based destination column index within the target row.",
+    )
+
+
+class DashboardNativeFilterConfig(BaseModel):
+    """Typed MCP representation of a dashboard native filter."""
+
+    id: str | None = Field(
+        None,
+        description="Existing native filter ID. Omit to create a new filter.",
+    )
+    name: str = Field(..., description="Filter display name", min_length=1)
+    description: str = Field("", description="Optional filter description")
+    filter_type: Literal["filter_select", "filter_range", "filter_time"] = Field(
+        ...,
+        description="Native filter control type",
+    )
+    target: NativeFilterTarget = Field(..., description="Target dataset and column")
+    charts_in_scope: List[int] = Field(
+        default_factory=list,
+        description="Chart IDs included in this filter's scope",
+    )
+    excluded_charts: List[int] = Field(
+        default_factory=list,
+        description="Chart IDs excluded from the scope root",
+    )
+    tabs_in_scope: List[str] = Field(
+        default_factory=list,
+        description="Optional dashboard tab component IDs included in scope",
+    )
+    root_path: List[str] = Field(
+        default_factory=lambda: ["ROOT_ID"],
+        description=(
+            "Dashboard layout root path for this filter scope. Use ROOT_ID for the "
+            "whole dashboard or include tab/container IDs for narrower scope."
+        ),
+        min_length=1,
+    )
+    cascade_parent_ids: List[str] = Field(
+        default_factory=list,
+        description="Native filter IDs that act as cascade parents",
+    )
+    default_value: str | int | float | bool | List[str | int | float | bool] | None = (
+        Field(
+            None,
+            description=(
+                "Optional default filter value. Select filters accept a scalar or "
+                "list. Range filters should use a two-item list."
+            ),
+        )
+    )
+    default_time_range: str | None = Field(
+        None,
+        description="Optional default time range for filter_time controls",
+        max_length=255,
+    )
+    enable_empty_filter: bool = False
+    default_to_first_item: bool = False
+    creatable: bool = False
+    multi_select: bool = False
+    inverse_selection: bool = False
+    search_all_options: bool = False
+    sort_ascending: bool = True
+    sort_metric: str | None = Field(
+        None,
+        description="Optional metric label used to sort select filter options",
+        max_length=255,
+    )
+    time_range: str | None = Field(
+        None,
+        description="Optional time range applied when fetching filter options",
+        max_length=255,
+    )
+    granularity_sqla: str | None = Field(
+        None,
+        description="Optional temporal column used with time_range prefiltering",
+        max_length=255,
+    )
+    adhoc_filters: List[ChartFilterConfig] = Field(
+        default_factory=list,
+        description="Optional typed row-level prefilters for filter option queries",
+    )
+
+    def _validate_duplicate_scope_inputs(self) -> None:
+        if len(self.charts_in_scope) != len(set(self.charts_in_scope)):
+            raise ValueError("charts_in_scope must not contain duplicates")
+        if len(self.excluded_charts) != len(set(self.excluded_charts)):
+            raise ValueError("excluded_charts must not contain duplicates")
+        if set(self.charts_in_scope).intersection(self.excluded_charts):
+            raise ValueError("charts_in_scope and excluded_charts must not overlap")
+        if len(self.root_path) != len(set(self.root_path)):
+            raise ValueError("root_path must not contain duplicates")
+
+    def _validate_time_filter_defaults(self) -> None:
+        if self.filter_type != "filter_time":
+            if self.default_time_range is not None:
+                raise ValueError(
+                    "default_time_range is only valid for filter_time filters"
+                )
+            return
+
+        if self.default_value is not None:
+            raise ValueError(
+                "Use default_time_range instead of default_value for filter_time"
+            )
+        if self.time_range is not None or self.granularity_sqla is not None:
+            raise ValueError(
+                "time_range and granularity_sqla are not valid for filter_time filters"
+            )
+        if self.adhoc_filters:
+            raise ValueError("adhoc_filters are not valid for filter_time filters")
+
+    def _validate_select_only_controls(self) -> None:
+        if self.filter_type == "filter_select":
+            return
+        if self.creatable:
+            raise ValueError("creatable is only valid for filter_select filters")
+        if self.sort_metric is not None:
+            raise ValueError("sort_metric is only valid for filter_select filters")
+
+    def _validate_adhoc_prefilters(self) -> None:
+        for filter_config in self.adhoc_filters:
+            if isinstance(filter_config, MetricFilterConfig):
+                raise ValueError(
+                    "metric_filter is not supported in native filter adhoc_filters"
+                )
+
+    @model_validator(mode="after")
+    def validate_scope_and_defaults(self) -> "DashboardNativeFilterConfig":
+        self._validate_duplicate_scope_inputs()
+        self._validate_time_filter_defaults()
+        self._validate_select_only_controls()
+        self._validate_adhoc_prefilters()
+        return self
+
+
+class UpsertDashboardNativeFiltersRequest(BaseModel):
+    """Typed request schema for upserting dashboard native filters."""
+
+    identifier: int | str = Field(
+        ...,
+        description="Dashboard identifier - can be numeric ID, UUID string, or slug",
+    )
+    filters: List[DashboardNativeFilterConfig] = Field(
+        ...,
+        description="Typed native filters to create or update",
+        min_length=1,
+    )
+    replace_existing: bool = Field(
+        False,
+        description=(
+            "When true, delete existing native filters that are not present "
+            "in the provided filters list."
+        ),
+    )
+
+
+class DashboardNativeFiltersMutationResponse(DashboardMutationResponse):
+    """Dashboard mutation response that also exposes updated native filter IDs."""
+
+    native_filter_ids: List[str] = Field(
+        default_factory=list,
+        description="IDs of the native filters present after the update",
+    )
 
 
 def dashboard_serializer(dashboard: "Dashboard") -> DashboardInfo:

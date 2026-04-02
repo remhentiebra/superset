@@ -24,25 +24,38 @@ generation that can be used by both generate_chart and generate_explore_link too
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
-from superset.constants import NO_TIME_RANGE
+from superset.mcp_service.chart.registry import STATIC_VIZ_TYPE_BY_CHART_TYPE
 from superset.mcp_service.chart.schemas import (
     BigNumberChartConfig,
+    BoxPlotChartConfig,
+    BubbleChartConfig,
     ChartCapabilities,
+    ChartFilterConfig,
     ChartSemantics,
     ColumnRef,
-    FilterConfig,
+    FunnelChartConfig,
+    GaugeChartConfig,
     HandlebarsChartConfig,
+    HeatmapChartConfig,
+    MetricFilterConfig,
     MixedTimeseriesChartConfig,
+    NullFilterConfig,
     PieChartConfig,
     PivotTableChartConfig,
+    RangeFilterConfig,
+    SankeyChartConfig,
+    SunburstChartConfig,
     TableChartConfig,
+    TimeFilterConfig,
+    TreemapChartConfig,
+    WordCloudChartConfig,
+    WorldMapChartConfig,
     XYChartConfig,
 )
 from superset.mcp_service.utils.url_utils import get_superset_base_url
 from superset.utils import json
-from superset.utils.core import FilterOperator
 
 logger = logging.getLogger(__name__)
 
@@ -315,50 +328,111 @@ def map_config_to_form_data(
     | PivotTableChartConfig
     | MixedTimeseriesChartConfig
     | HandlebarsChartConfig
-    | BigNumberChartConfig,
+    | FunnelChartConfig
+    | BigNumberChartConfig
+    | GaugeChartConfig
+    | HeatmapChartConfig
+    | TreemapChartConfig
+    | SunburstChartConfig
+    | SankeyChartConfig
+    | WordCloudChartConfig
+    | WorldMapChartConfig
+    | BoxPlotChartConfig
+    | BubbleChartConfig,
     dataset_id: int | str | None = None,
 ) -> Dict[str, Any]:
     """Map chart config to Superset form_data."""
-    if isinstance(config, TableChartConfig):
-        return map_table_config(config)
-    elif isinstance(config, XYChartConfig):
-        return map_xy_config(config, dataset_id=dataset_id)
-    elif isinstance(config, PieChartConfig):
-        return map_pie_config(config)
-    elif isinstance(config, PivotTableChartConfig):
-        return map_pivot_table_config(config)
-    elif isinstance(config, MixedTimeseriesChartConfig):
-        return map_mixed_timeseries_config(config, dataset_id=dataset_id)
-    elif isinstance(config, HandlebarsChartConfig):
-        return map_handlebars_config(config)
-    elif isinstance(config, BigNumberChartConfig):
-        if config.show_trendline and config.temporal_column:
-            if not is_column_truly_temporal(config.temporal_column, dataset_id):
-                raise ValueError(
-                    f"Big Number trendline requires a temporal SQL column; "
-                    f"'{config.temporal_column}' is not temporal."
-                )
-        return map_big_number_config(config)
-    else:
+    mapper_by_type: dict[type[Any], Callable[[Any], Dict[str, Any]]] = {
+        TableChartConfig: lambda current: map_table_config(current),
+        XYChartConfig: lambda current: map_xy_config(current, dataset_id=dataset_id),
+        PieChartConfig: lambda current: map_pie_config(current),
+        PivotTableChartConfig: lambda current: map_pivot_table_config(current),
+        MixedTimeseriesChartConfig: lambda current: map_mixed_timeseries_config(
+            current,
+            dataset_id=dataset_id,
+        ),
+        HandlebarsChartConfig: lambda current: map_handlebars_config(current),
+        FunnelChartConfig: lambda current: map_funnel_config(current),
+        BigNumberChartConfig: lambda current: map_big_number_config(current),
+        GaugeChartConfig: lambda current: map_gauge_config(current),
+        HeatmapChartConfig: lambda current: map_heatmap_config(current),
+        TreemapChartConfig: lambda current: map_treemap_config(current),
+        SunburstChartConfig: lambda current: map_sunburst_config(current),
+        SankeyChartConfig: lambda current: map_sankey_config(current),
+        WordCloudChartConfig: lambda current: map_word_cloud_config(current),
+        WorldMapChartConfig: lambda current: map_world_map_config(current),
+        BoxPlotChartConfig: lambda current: map_box_plot_config(current),
+        BubbleChartConfig: lambda current: map_bubble_config(current),
+    }
+    mapper = mapper_by_type.get(type(config))
+    if mapper is None:
         raise ValueError(f"Unsupported config type: {type(config)}")
+    return mapper(config)
 
 
 def _add_adhoc_filters(
-    form_data: Dict[str, Any], filters: list[FilterConfig] | None
+    form_data: Dict[str, Any], filters: list[ChartFilterConfig] | None
 ) -> None:
     """Add adhoc filters to form_data if any are specified."""
-    if filters:
-        form_data["adhoc_filters"] = [
+    for filter_config in filters or []:
+        if (
+            isinstance(filter_config, TimeFilterConfig)
+            and filter_config.time_grain is not None
+        ):
+            form_data["time_grain_sqla"] = filter_config.time_grain
+    if adhoc_filters := chart_filters_to_adhoc_filters(filters):
+        form_data["adhoc_filters"] = adhoc_filters
+
+
+def chart_filters_to_adhoc_filters(
+    filters: list[ChartFilterConfig] | None,
+) -> list[Dict[str, Any]]:
+    """Convert typed chart filter configs into Superset adhoc filter payloads."""
+    if not filters:
+        return []
+
+    adhoc_filters: list[Dict[str, Any]] = []
+    for filter_config in filters:
+        if filter_config is None:
+            continue
+        if isinstance(filter_config, TimeFilterConfig):
+            adhoc_filters.append(
+                {
+                    "clause": "WHERE",
+                    "expressionType": "SIMPLE",
+                    "subject": filter_config.column,
+                    "operator": "TEMPORAL_RANGE",
+                    "comparator": filter_config.time_range,
+                }
+            )
+            continue
+
+        comparator = getattr(filter_config, "value", None)
+        if (
+            isinstance(filter_config, (RangeFilterConfig, MetricFilterConfig))
+            and filter_config.op == "BETWEEN"
+        ):
+            range_value = filter_config.value
+            if isinstance(range_value, tuple):
+                comparator = [range_value[0], range_value[1]]
+            elif isinstance(range_value, list):
+                comparator = range_value
+
+        adhoc_filters.append(
             {
-                "clause": "WHERE",
+                "clause": (
+                    "HAVING"
+                    if isinstance(filter_config, MetricFilterConfig)
+                    else "WHERE"
+                ),
                 "expressionType": "SIMPLE",
                 "subject": filter_config.column,
                 "operator": map_filter_operator(filter_config.op),
-                "comparator": filter_config.value,
+                "comparator": comparator,
             }
-            for filter_config in filters
-            if filter_config is not None
-        ]
+        )
+
+    return adhoc_filters
 
 
 def adhoc_filters_to_query_filters(
@@ -368,6 +442,8 @@ def adhoc_filters_to_query_filters(
 
     Adhoc filters use ``{subject, operator, comparator}`` keys while
     ``QueryContextFactory`` expects ``{col, op, val}`` (QueryObjectFilterClause).
+    Metric filters are preserved as metric labels so Superset can route them into
+    HAVING clauses during query construction.
     """
     result: list[Dict[str, Any]] = []
     for f in adhoc_filters:
@@ -550,7 +626,6 @@ def configure_temporal_handling(
     Stores any warnings in ``form_data["_mcp_warnings"]``.
     """
     if x_is_temporal:
-        form_data["granularity_sqla"] = form_data.get("x_axis")
         if time_grain:
             form_data["time_grain_sqla"] = time_grain
     else:
@@ -565,33 +640,6 @@ def configure_temporal_handling(
                 f"column is not a temporal type. time_grain only applies to "
                 f"DATE/DATETIME/TIMESTAMP columns."
             )
-
-
-def _ensure_temporal_adhoc_filter(form_data: Dict[str, Any], column: str) -> None:
-    """Ensure a TEMPORAL_RANGE adhoc filter exists for the given column.
-
-    Mirrors the Explore UI behavior: when a temporal column is set as
-    the x-axis, a TEMPORAL_RANGE filter must be present so dashboard
-    time-range filters can bind to it.  Without this filter, Explore
-    shows a warning dialog asking the user to add it manually.
-    """
-    existing = form_data.get("adhoc_filters", [])
-    if any(
-        f.get("operator") == FilterOperator.TEMPORAL_RANGE.value
-        and f.get("subject") == column
-        for f in existing
-    ):
-        return
-    existing.append(
-        {
-            "clause": "WHERE",
-            "expressionType": "SIMPLE",
-            "subject": column,
-            "operator": FilterOperator.TEMPORAL_RANGE.value,
-            "comparator": NO_TIME_RANGE,
-        }
-    )
-    form_data["adhoc_filters"] = existing
 
 
 def map_xy_config(
@@ -651,9 +699,6 @@ def map_xy_config(
 
     _add_adhoc_filters(form_data, config.filters)
 
-    if x_is_temporal:
-        _ensure_temporal_adhoc_filter(form_data, config.x.name)
-
     form_data["row_limit"] = config.row_limit
 
     # Add stacking configuration
@@ -696,46 +741,6 @@ def map_pie_config(config: PieChartConfig) -> Dict[str, Any]:
     return form_data
 
 
-def map_big_number_config(config: BigNumberChartConfig) -> Dict[str, Any]:
-    """Map big number chart config to Superset form_data."""
-    # Determine viz_type: big_number (with trendline) or big_number_total
-    if config.show_trendline and config.temporal_column:
-        viz_type = "big_number"
-    else:
-        viz_type = "big_number_total"
-
-    metric = create_metric_object(config.metric)
-    form_data: Dict[str, Any] = {
-        "viz_type": viz_type,
-        "metric": metric,
-    }
-
-    if config.subheader:
-        form_data["subheader"] = config.subheader
-
-    if config.y_axis_format:
-        form_data["y_axis_format"] = config.y_axis_format
-
-    # Trendline-specific fields
-    if viz_type == "big_number":
-        # Big Number with trendline uses granularity_sqla for the temporal column
-        # (unlike XY charts which use x_axis). This is how Superset's
-        # big_number viz determines the time column for the trendline.
-        form_data["granularity_sqla"] = config.temporal_column
-        form_data["show_trend_line"] = True
-        form_data["start_y_axis_at_zero"] = config.start_y_axis_at_zero
-
-        if config.time_grain:
-            form_data["time_grain_sqla"] = config.time_grain
-
-        if config.compare_lag is not None:
-            form_data["compare_lag"] = config.compare_lag
-
-    _add_adhoc_filters(form_data, config.filters)
-
-    return form_data
-
-
 def map_handlebars_config(config: HandlebarsChartConfig) -> Dict[str, Any]:
     """Map handlebars chart config to Superset form_data."""
     form_data: Dict[str, Any] = {
@@ -758,19 +763,241 @@ def map_handlebars_config(config: HandlebarsChartConfig) -> Dict[str, Any]:
             form_data["groupby"] = [col.name for col in config.groupby]
         if config.metrics:
             form_data["metrics"] = [create_metric_object(col) for col in config.metrics]
-    if config.filters:
-        form_data["adhoc_filters"] = [
-            {
-                "clause": "WHERE",
-                "expressionType": "SIMPLE",
-                "subject": filter_config.column,
-                "operator": map_filter_operator(filter_config.op),
-                "comparator": filter_config.value,
-            }
-            for filter_config in config.filters
-            if filter_config is not None
-        ]
+    _add_adhoc_filters(form_data, config.filters)
 
+    return form_data
+
+
+def map_funnel_config(config: FunnelChartConfig) -> Dict[str, Any]:
+    """Map funnel chart config to Superset form_data."""
+    form_data: Dict[str, Any] = {
+        "viz_type": "funnel",
+        "groupby": [config.dimension.name],
+        "metric": create_metric_object(config.metric),
+        "percent_calculation_type": config.percent_calculation_type,
+        "show_labels": config.show_labels,
+        "show_legend": config.show_legend,
+        "show_tooltip_labels": config.show_tooltip_labels,
+        "sort_by_metric": config.sort_by_metric,
+        "number_format": config.number_format,
+        "color_scheme": config.color_scheme,
+        "row_limit": config.row_limit,
+    }
+
+    _add_adhoc_filters(form_data, config.filters)
+    return form_data
+
+
+def map_big_number_config(config: BigNumberChartConfig) -> Dict[str, Any]:
+    """Map big number chart config to Superset form_data."""
+    form_data: Dict[str, Any] = {
+        "viz_type": "big_number" if config.show_trend_line else "big_number_total",
+        "metric": create_metric_object(config.metric),
+        "header_font_size": config.header_font_size,
+        "subheader_font_size": config.subheader_font_size,
+        "time_format": config.time_format,
+        "y_axis_format": config.number_format,
+    }
+
+    if config.show_trend_line and config.x:
+        form_data["show_trend_line"] = True
+        form_data["x_axis"] = config.x.name
+        form_data["start_y_axis_at_zero"] = config.start_y_axis_at_zero
+        if config.time_grain:
+            form_data["time_grain_sqla"] = config.time_grain
+
+    _add_adhoc_filters(form_data, config.filters)
+    return form_data
+
+
+def map_gauge_config(config: GaugeChartConfig) -> Dict[str, Any]:
+    """Map gauge chart config to Superset form_data."""
+    form_data: Dict[str, Any] = {
+        "viz_type": "gauge_chart",
+        "metric": create_metric_object(config.metric),
+        "row_limit": config.row_limit,
+        "start_angle": config.start_angle,
+        "end_angle": config.end_angle,
+        "show_pointer": config.show_pointer,
+        "show_progress": config.show_progress,
+        "show_axis_tick": config.show_axis_tick,
+        "show_split_line": config.show_split_line,
+        "split_number": config.split_number,
+        "font_size": config.font_size,
+        "value_formatter": config.value_formatter,
+        "overlap": config.overlap,
+        "round_cap": config.round_cap,
+        "color_scheme": config.color_scheme,
+        "number_format": config.number_format,
+    }
+
+    if config.dimension:
+        form_data["groupby"] = [config.dimension.name]
+
+    _add_adhoc_filters(form_data, config.filters)
+    return form_data
+
+
+def map_heatmap_config(config: HeatmapChartConfig) -> Dict[str, Any]:
+    """Map heatmap chart config to Superset form_data."""
+    form_data: Dict[str, Any] = {
+        "viz_type": "heatmap_v2",
+        "x_axis": config.x.name,
+        "groupby": config.y.name,
+        "metric": create_metric_object(config.metric),
+        "normalize_across": config.normalize_across,
+        "show_legend": config.show_legend,
+        "show_percentage": config.show_percentage,
+        "show_values": config.show_values,
+        "sort_x_axis": config.sort_x_axis,
+        "sort_y_axis": config.sort_y_axis,
+        "linear_color_scheme": config.linear_color_scheme,
+        "row_limit": config.row_limit,
+        "value_bounds": config.value_bounds,
+        "x_axis_time_format": config.x_axis_time_format,
+        "y_axis_format": config.number_format,
+    }
+
+    if config.time_grain:
+        form_data["time_grain_sqla"] = config.time_grain
+
+    _add_adhoc_filters(form_data, config.filters)
+    return form_data
+
+
+def map_treemap_config(config: TreemapChartConfig) -> Dict[str, Any]:
+    """Map treemap chart config to Superset form_data."""
+    form_data: Dict[str, Any] = {
+        "viz_type": "treemap_v2",
+        "groupby": [dimension.name for dimension in config.dimensions],
+        "metric": create_metric_object(config.metric),
+        "color_scheme": config.color_scheme,
+        "label_type": config.label_type,
+        "number_format": config.number_format,
+        "row_limit": config.row_limit,
+        "show_labels": config.show_labels,
+        "show_upper_labels": config.show_upper_labels,
+    }
+
+    _add_adhoc_filters(form_data, config.filters)
+    return form_data
+
+
+def map_sunburst_config(config: SunburstChartConfig) -> Dict[str, Any]:
+    """Map sunburst chart config to Superset form_data."""
+    form_data: Dict[str, Any] = {
+        "viz_type": "sunburst_v2",
+        "columns": [dimension.name for dimension in config.dimensions],
+        "metric": create_metric_object(config.metric),
+        "label_type": config.label_type,
+        "linear_color_scheme": config.linear_color_scheme,
+        "number_format": config.number_format,
+        "row_limit": config.row_limit,
+        "show_labels": config.show_labels,
+        "show_labels_threshold": config.show_labels_threshold,
+    }
+
+    _add_adhoc_filters(form_data, config.filters)
+    return form_data
+
+
+def map_sankey_config(config: SankeyChartConfig) -> Dict[str, Any]:
+    """Map sankey chart config to Superset form_data."""
+    form_data: Dict[str, Any] = {
+        "viz_type": "sankey_v2",
+        "source": config.source.name,
+        "target": config.target.name,
+        "metric": create_metric_object(config.metric),
+        "row_limit": config.row_limit,
+        "color_scheme": config.color_scheme,
+    }
+
+    _add_adhoc_filters(form_data, config.filters)
+    return form_data
+
+
+def map_word_cloud_config(config: WordCloudChartConfig) -> Dict[str, Any]:
+    """Map word cloud chart config to Superset form_data."""
+    form_data: Dict[str, Any] = {
+        "viz_type": "word_cloud",
+        "series": config.series.name,
+        "metric": create_metric_object(config.metric),
+        "rotation": config.rotation,
+        "size_from": config.size_from,
+        "size_to": config.size_to,
+        "row_limit": config.row_limit,
+        "color_scheme": config.color_scheme,
+    }
+
+    _add_adhoc_filters(form_data, config.filters)
+    return form_data
+
+
+def map_world_map_config(config: WorldMapChartConfig) -> Dict[str, Any]:
+    """Map world map chart config to Superset form_data."""
+    form_data: Dict[str, Any] = {
+        "viz_type": "world_map",
+        "entity": config.entity.name,
+        "metric": create_metric_object(config.metric),
+        "country_fieldtype": config.country_fieldtype,
+        "show_bubbles": config.show_bubbles,
+        "row_limit": config.row_limit,
+    }
+
+    if config.secondary_metric:
+        form_data["secondary_metric"] = create_metric_object(config.secondary_metric)
+
+    _add_adhoc_filters(form_data, config.filters)
+    return form_data
+
+
+def map_box_plot_config(config: BoxPlotChartConfig) -> Dict[str, Any]:
+    """Map box plot chart config to Superset form_data."""
+    form_data: Dict[str, Any] = {
+        "viz_type": "box_plot",
+        "columns": [config.x.name],
+        "metrics": [create_metric_object(config.metric)],
+        "number_format": config.number_format,
+        "row_limit": config.row_limit,
+        "whiskerOptions": config.whisker_options,
+    }
+
+    if config.group_by:
+        form_data["groupby"] = [dimension.name for dimension in config.group_by]
+    if config.time_grain:
+        form_data["time_grain_sqla"] = config.time_grain
+
+    _add_adhoc_filters(form_data, config.filters)
+    return form_data
+
+
+def map_bubble_config(config: BubbleChartConfig) -> Dict[str, Any]:
+    """Map bubble chart config to Superset form_data."""
+    form_data: Dict[str, Any] = {
+        "viz_type": "bubble_v2",
+        "x": create_metric_object(config.x),
+        "y": create_metric_object(config.y),
+        "size": create_metric_object(config.size),
+        "series": config.series.name,
+        "show_legend": config.show_legend,
+        "legendOrientation": config.legend_orientation,
+        "legendType": config.legend_type,
+        "max_bubble_size": str(config.max_bubble_size),
+        "opacity": config.opacity,
+        "order_desc": config.order_desc,
+        "row_limit": config.row_limit,
+        "tooltipSizeFormat": config.tooltip_size_format,
+        "truncateXAxis": config.truncate_x_axis,
+        "xAxisFormat": config.x_axis_format,
+        "y_axis_format": config.y_axis_format,
+        "color_scheme": config.color_scheme,
+        "y_axis_bounds": [None, None],
+    }
+
+    if config.entity:
+        form_data["entity"] = config.entity.name
+
+    _add_adhoc_filters(form_data, config.filters)
     return form_data
 
 
@@ -925,6 +1152,10 @@ def map_filter_operator(op: str) -> str:
         "NOT LIKE": "NOT LIKE",
         "IN": "IN",
         "NOT IN": "NOT IN",
+        "BETWEEN": "BETWEEN",
+        "IS NULL": "IS NULL",
+        "IS NOT NULL": "IS NOT NULL",
+        "TEMPORAL_RANGE": "TEMPORAL_RANGE",
     }
     return operator_map.get(op, op)
 
@@ -942,7 +1173,7 @@ def _humanize_column(col: ColumnRef) -> str:
 
 
 def _summarize_filters(
-    filters: list[FilterConfig] | None,
+    filters: list[ChartFilterConfig] | None,
 ) -> str | None:
     """Extract a short context string from filter configs."""
     if not filters:
@@ -950,10 +1181,23 @@ def _summarize_filters(
     parts: list[str] = []
     for f in filters[:2]:
         col = getattr(f, "column", "")
-        val = getattr(f, "value", "")
-        if isinstance(val, list):
-            val = ", ".join(str(v) for v in val[:3])
-        parts.append(f"{str(col).replace('_', ' ').title()} {val}")
+        if isinstance(f, TimeFilterConfig):
+            time_value = f.time_range
+            parts.append(f"{str(col).replace('_', ' ').title()} {time_value}")
+            continue
+        if isinstance(f, MetricFilterConfig):
+            metric_value: Any = getattr(f, "value", "")
+            if isinstance(metric_value, (list, tuple)):
+                metric_value = ", ".join(str(v) for v in list(metric_value)[:3])
+            parts.append(f"{str(col)} {f.op} {metric_value}")
+            continue
+        if isinstance(f, NullFilterConfig):
+            parts.append(f"{str(col).replace('_', ' ').title()} {f.op}")
+            continue
+        filter_value: Any = getattr(f, "value", "")
+        if isinstance(filter_value, (list, tuple)):
+            filter_value = ", ".join(str(v) for v in list(filter_value)[:3])
+        parts.append(f"{str(col).replace('_', ' ').title()} {filter_value}")
     return ", ".join(parts) if parts else None
 
 
@@ -1061,21 +1305,164 @@ def _handlebars_chart_what(config: HandlebarsChartConfig) -> str:
     return "Handlebars Chart"
 
 
-def _big_number_chart_what(config: BigNumberChartConfig) -> str:
-    """Build the 'what' portion for a big number chart name.
+def _funnel_chart_what(config: FunnelChartConfig) -> str:
+    """Build the descriptive fragment for a funnel chart."""
+    return f"{config.dimension.name} Funnel"
 
-    Uses parentheses instead of en-dash to avoid collision with
-    ``generate_chart_name``'s ``\u2013`` context separator.
-    """
-    if config.metric.label:
-        metric_label = config.metric.label
-    elif config.metric.aggregate:
-        metric_label = f"{config.metric.aggregate}({config.metric.name})"
-    else:
-        metric_label = config.metric.name
-    if config.show_trendline:
-        return f"Big Number ({metric_label}, trendline)"
-    return f"Big Number ({metric_label})"
+
+def _big_number_chart_what(config: BigNumberChartConfig) -> str:
+    """Build the descriptive fragment for a big number chart."""
+    metric_label = config.metric.label or config.metric.name
+    return (
+        f"{metric_label} KPI" if not config.show_trend_line else f"{metric_label} Trend"
+    )
+
+
+def _gauge_chart_what(config: GaugeChartConfig) -> str:
+    """Build the descriptive fragment for a gauge chart."""
+    metric_label = config.metric.label or config.metric.name
+    if config.dimension:
+        return f"{metric_label} by {config.dimension.name}"
+    return f"{metric_label} Gauge"
+
+
+def _heatmap_chart_what(config: HeatmapChartConfig) -> str:
+    """Build the descriptive fragment for a heatmap chart."""
+    return f"{config.metric.name} Heatmap"
+
+
+def _treemap_chart_what(config: TreemapChartConfig) -> str:
+    """Build the descriptive fragment for a treemap chart."""
+    root_dimension = config.dimensions[0].name
+    return f"{config.metric.name} by {root_dimension}"
+
+
+def _sunburst_chart_what(config: SunburstChartConfig) -> str:
+    """Build the descriptive fragment for a sunburst chart."""
+    root_dimension = config.dimensions[0].name
+    return f"{config.metric.name} Sunburst by {root_dimension}"
+
+
+def _sankey_chart_what(config: SankeyChartConfig) -> str:
+    """Build the descriptive fragment for a sankey chart."""
+    return f"{config.source.name} to {config.target.name} Flow"
+
+
+def _word_cloud_chart_what(config: WordCloudChartConfig) -> str:
+    """Build the descriptive fragment for a word cloud chart."""
+    return f"{config.series.name} Word Cloud"
+
+
+def _world_map_chart_what(config: WorldMapChartConfig) -> str:
+    """Build the descriptive fragment for a world map chart."""
+    return f"{config.metric.name} by {config.entity.name}"
+
+
+def _box_plot_chart_what(config: BoxPlotChartConfig) -> str:
+    """Build the descriptive fragment for a box plot chart."""
+    if config.group_by:
+        return f"{config.metric.name} Distribution by {config.group_by[0].name}"
+    return f"{config.metric.name} Distribution"
+
+
+def _bubble_chart_what(config: BubbleChartConfig) -> str:
+    """Build the descriptive fragment for a bubble chart."""
+    return f"{config.x.name} vs {config.y.name}"
+
+
+def _chart_name_parts(
+    config: TableChartConfig
+    | XYChartConfig
+    | PieChartConfig
+    | PivotTableChartConfig
+    | MixedTimeseriesChartConfig
+    | HandlebarsChartConfig
+    | FunnelChartConfig
+    | BigNumberChartConfig
+    | GaugeChartConfig
+    | HeatmapChartConfig
+    | TreemapChartConfig
+    | SunburstChartConfig
+    | SankeyChartConfig
+    | WordCloudChartConfig
+    | WorldMapChartConfig
+    | BoxPlotChartConfig
+    | BubbleChartConfig,
+    dataset_name: str | None = None,
+) -> tuple[str, str | None] | None:
+    """Return the title and optional context fragments for a chart config."""
+    part_builders: dict[type[Any], Callable[[Any], tuple[str, str | None]]] = {
+        TableChartConfig: lambda current: (
+            _table_chart_what(current, dataset_name),
+            _summarize_filters(current.filters),
+        ),
+        XYChartConfig: lambda current: (
+            _xy_chart_what(current),
+            _xy_chart_context(current),
+        ),
+        PieChartConfig: lambda current: (
+            _pie_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+        PivotTableChartConfig: lambda current: (
+            _pivot_table_what(current),
+            _summarize_filters(current.filters),
+        ),
+        MixedTimeseriesChartConfig: lambda current: (
+            _mixed_timeseries_what(current),
+            _summarize_filters(current.filters),
+        ),
+        HandlebarsChartConfig: lambda current: (
+            _handlebars_chart_what(current),
+            _summarize_filters(getattr(current, "filters", None)),
+        ),
+        FunnelChartConfig: lambda current: (
+            _funnel_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+        BigNumberChartConfig: lambda current: (
+            _big_number_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+        GaugeChartConfig: lambda current: (
+            _gauge_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+        HeatmapChartConfig: lambda current: (
+            _heatmap_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+        TreemapChartConfig: lambda current: (
+            _treemap_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+        SunburstChartConfig: lambda current: (
+            _sunburst_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+        SankeyChartConfig: lambda current: (
+            _sankey_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+        WordCloudChartConfig: lambda current: (
+            _word_cloud_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+        WorldMapChartConfig: lambda current: (
+            _world_map_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+        BoxPlotChartConfig: lambda current: (
+            _box_plot_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+        BubbleChartConfig: lambda current: (
+            _bubble_chart_what(current),
+            _summarize_filters(current.filters),
+        ),
+    }
+    builder = part_builders.get(type(config))
+    return builder(config) if builder else None
 
 
 def generate_chart_name(
@@ -1085,7 +1472,17 @@ def generate_chart_name(
     | PivotTableChartConfig
     | MixedTimeseriesChartConfig
     | HandlebarsChartConfig
-    | BigNumberChartConfig,
+    | FunnelChartConfig
+    | BigNumberChartConfig
+    | GaugeChartConfig
+    | HeatmapChartConfig
+    | TreemapChartConfig
+    | SunburstChartConfig
+    | SankeyChartConfig
+    | WordCloudChartConfig
+    | WorldMapChartConfig
+    | BoxPlotChartConfig
+    | BubbleChartConfig,
     dataset_name: str | None = None,
 ) -> str:
     """Generate a descriptive chart name following a standard format.
@@ -1101,29 +1498,10 @@ def generate_chart_name(
     An en-dash followed by context (filters / time grain) is appended
     when such information is available.
     """
-    if isinstance(config, TableChartConfig):
-        what = _table_chart_what(config, dataset_name)
-        context = _summarize_filters(config.filters)
-    elif isinstance(config, XYChartConfig):
-        what = _xy_chart_what(config)
-        context = _xy_chart_context(config)
-    elif isinstance(config, PieChartConfig):
-        what = _pie_chart_what(config)
-        context = _summarize_filters(config.filters)
-    elif isinstance(config, PivotTableChartConfig):
-        what = _pivot_table_what(config)
-        context = _summarize_filters(config.filters)
-    elif isinstance(config, MixedTimeseriesChartConfig):
-        what = _mixed_timeseries_what(config)
-        context = _summarize_filters(config.filters)
-    elif isinstance(config, HandlebarsChartConfig):
-        what = _handlebars_chart_what(config)
-        context = _summarize_filters(getattr(config, "filters", None))
-    elif isinstance(config, BigNumberChartConfig):
-        what = _big_number_chart_what(config)
-        context = _summarize_filters(getattr(config, "filters", None))
-    else:
+    parts = _chart_name_parts(config, dataset_name=dataset_name)
+    if parts is None:
         return "Chart"
+    what, context = parts
 
     name = what
     if context:
@@ -1145,20 +1523,14 @@ def _resolve_viz_type(config: Any) -> str:
         return viz_type_map.get(kind, "echarts_timeseries_line")
     elif chart_type == "table":
         return getattr(config, "viz_type", "table")
-    elif chart_type == "pie":
-        return "pie"
-    elif chart_type == "pivot_table":
-        return "pivot_table_v2"
-    elif chart_type == "mixed_timeseries":
-        return "mixed_timeseries"
-    elif chart_type == "handlebars":
-        return "handlebars"
     elif chart_type == "big_number":
-        show_trendline = getattr(config, "show_trendline", False)
-        temporal_column = getattr(config, "temporal_column", None)
         return (
-            "big_number" if show_trendline and temporal_column else "big_number_total"
+            "big_number"
+            if getattr(config, "show_trend_line", False)
+            else "big_number_total"
         )
+    elif chart_type in STATIC_VIZ_TYPE_BY_CHART_TYPE:
+        return STATIC_VIZ_TYPE_BY_CHART_TYPE[chart_type]
     return "unknown"
 
 
@@ -1242,13 +1614,13 @@ def analyze_chart_semantics(chart: Any | None, config: Any) -> ChartSemantics:
             "Renders data using a custom Handlebars HTML template for "
             "fully flexible layouts like KPI cards, leaderboards, and reports"
         ),
-        "big_number": (
-            "Displays a key metric with a trendline showing "
-            "how the value changes over time"
-        ),
-        "big_number_total": (
-            "Highlights a single key metric value as a prominent number"
-        ),
+        "treemap_v2": "Shows hierarchical proportions with nested rectangular areas",
+        "sunburst_v2": "Shows hierarchical proportions in concentric radial layers",
+        "sankey_v2": "Shows how values flow between source and target categories",
+        "word_cloud": "Highlights the most important terms or categories by size",
+        "world_map": "Shows geographic variation across countries or regions",
+        "box_plot": "Summarizes distributions, spread, and outliers across groups",
+        "bubble_v2": "Compares two metrics and bubble size across grouped entities",
     }
 
     primary_insight = insights_map.get(

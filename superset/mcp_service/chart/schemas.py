@@ -25,7 +25,6 @@ import difflib
 from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Literal, Protocol
 
-import humanize
 from pydantic import (
     AliasChoices,
     AliasPath,
@@ -37,7 +36,6 @@ from pydantic import (
     model_validator,
     PositiveInt,
 )
-from typing_extensions import Self
 
 from superset.constants import TimeGrain
 from superset.daos.base import ColumnOperator, ColumnOperatorEnum
@@ -273,13 +271,6 @@ class GetChartInfoRequest(BaseModel):
         return self
 
 
-def _humanize_timestamp(dt: datetime | None) -> str | None:
-    """Convert a datetime to a humanized string like '2 hours ago'."""
-    if dt is None:
-        return None
-    return humanize.naturaltime(datetime.now() - dt)
-
-
 def serialize_chart_object(chart: ChartLike | None) -> ChartInfo | None:
     if not chart:
         return None
@@ -305,11 +296,11 @@ def serialize_chart_object(chart: ChartLike | None) -> ChartInfo | None:
         or (str(chart.changed_by) if getattr(chart, "changed_by", None) else None),
         changed_by_name=getattr(chart, "changed_by_name", None),
         changed_on=getattr(chart, "changed_on", None),
-        changed_on_humanized=_humanize_timestamp(getattr(chart, "changed_on", None)),
+        changed_on_humanized=getattr(chart, "changed_on_humanized", None),
         created_by=getattr(chart, "created_by_name", None)
         or (str(chart.created_by) if getattr(chart, "created_by", None) else None),
         created_on=getattr(chart, "created_on", None),
-        created_on_humanized=_humanize_timestamp(getattr(chart, "created_on", None)),
+        created_on_humanized=getattr(chart, "created_on_humanized", None),
         uuid=str(getattr(chart, "uuid", "")) if getattr(chart, "uuid", None) else None,
         tags=[
             TagInfo.model_validate(tag, from_attributes=True)
@@ -467,6 +458,12 @@ class UnknownFieldCheckMixin(BaseModel):
     def check_unknown_fields(cls, data: Any) -> Any:
         return _check_unknown_fields(data, cls)
 
+    @field_validator("filters", mode="before", check_fields=False)
+    @classmethod
+    def normalize_filters(cls, value: Any) -> Any:
+        """Normalize legacy and typed filter inputs before union validation."""
+        return _normalize_chart_filters_input(value)
+
 
 class ColumnRef(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -542,15 +539,88 @@ class LegendConfig(BaseModel):
     position: Literal["top", "bottom", "left", "right"] | None = "right"
 
 
+_LEGACY_SIMPLE_FILTER_OPERATORS = {
+    "=",
+    ">",
+    "<",
+    ">=",
+    "<=",
+    "!=",
+    "LIKE",
+    "ILIKE",
+    "NOT LIKE",
+    "IN",
+    "NOT IN",
+}
+_RANGE_FILTER_OPERATORS = {">", ">=", "<", "<=", "BETWEEN"}
+_NULL_FILTER_OPERATORS = {"IS NULL", "IS NOT NULL"}
+
+
+def _coerce_chart_filter_data(value: Any) -> dict[str, Any] | None:
+    """Convert supported chart filter inputs into a mutable dictionary."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="python", by_alias=False)
+    if isinstance(value, dict):
+        return dict(value)
+    return None
+
+
+def _infer_chart_filter_type(data: dict[str, Any], operator: Any, metric: Any) -> str:
+    """Infer the typed chart filter variant from legacy-style payloads."""
+    if metric is not None:
+        return "metric_filter"
+    if operator == "TEMPORAL_RANGE" or "time_range" in data:
+        return "time_filter"
+    if operator in _NULL_FILTER_OPERATORS:
+        return "null_filter"
+    if operator in _RANGE_FILTER_OPERATORS:
+        return "range_filter"
+    return "value_filter"
+
+
+def _normalize_single_chart_filter(value: Any) -> Any:
+    """Normalize chart filter input into the discriminated union shape."""
+    data = _coerce_chart_filter_data(value)
+    if data is None:
+        return value
+
+    operator = data.get("op") or data.get("operator") or data.get("opr")
+    metric = data.get("metric") or data.get("metric_name")
+    column = data.get("column") or data.get("col") or data.get("subject")
+
+    if metric is not None and "metric" not in data:
+        data["metric"] = metric
+
+    if column is not None and "column" not in data:
+        data["column"] = column
+
+    data.setdefault("filter_type", _infer_chart_filter_type(data, operator, metric))
+
+    if data["filter_type"] == "time_filter" and "time_range" not in data:
+        comparator = data.get("value") or data.get("val") or data.get("comparator")
+        if comparator is not None:
+            data["time_range"] = comparator
+
+    return data
+
+
+def _normalize_chart_filters_input(value: Any) -> Any:
+    """Normalize list-style filter input for chart config schemas."""
+    if not isinstance(value, list):
+        return value
+    return [_normalize_single_chart_filter(item) for item in value]
+
+
 class FilterConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    filter_type: Literal["value_filter"] = "value_filter"
     column: str = Field(
         ...,
         min_length=1,
         max_length=255,
         pattern=r"^[a-zA-Z0-9_][a-zA-Z0-9_\s\-\.]*$",
-        validation_alias=AliasChoices("column", "col"),
+        validation_alias=AliasChoices("column", "col", "subject"),
     )
     op: Literal[
         "=",
@@ -609,6 +679,248 @@ class FilterConfig(BaseModel):
         return self
 
 
+class RangeFilterConfig(BaseModel):
+    """Numeric or lexical range filter."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    filter_type: Literal["range_filter"] = "range_filter"
+    column: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        pattern=r"^[a-zA-Z0-9_][a-zA-Z0-9_\s\-\.]*$",
+        validation_alias=AliasChoices("column", "col", "subject"),
+    )
+    op: Literal[">", ">=", "<", "<=", "BETWEEN"] = Field(
+        ...,
+        validation_alias=AliasChoices("op", "operator", "opr"),
+    )
+    value: (
+        str
+        | int
+        | float
+        | bool
+        | list[str | int | float | bool]
+        | tuple[str | int | float | bool, str | int | float | bool]
+    ) = Field(
+        ...,
+        description="BETWEEN requires exactly two boundary values.",
+        validation_alias=AliasChoices("value", "val"),
+    )
+
+    @field_validator("column")
+    @classmethod
+    def sanitize_column(cls, v: str) -> str:
+        return sanitize_user_input(v, "Filter column", max_length=255)  # type: ignore[return-value]
+
+    @field_validator("value")
+    @classmethod
+    def sanitize_value(
+        cls,
+        v: (
+            str
+            | int
+            | float
+            | bool
+            | list[str | int | float | bool]
+            | tuple[str | int | float | bool, str | int | float | bool]
+        ),
+    ) -> (
+        str
+        | int
+        | float
+        | bool
+        | list[str | int | float | bool]
+        | tuple[str | int | float | bool, str | int | float | bool]
+    ):
+        if isinstance(v, tuple):
+            sanitized_tuple = tuple(
+                sanitize_filter_value(item, max_length=1000) for item in v
+            )
+            if len(sanitized_tuple) == 2:
+                return (sanitized_tuple[0], sanitized_tuple[1])
+            return list(sanitized_tuple)
+        if isinstance(v, list):
+            return [sanitize_filter_value(item, max_length=1000) for item in v]
+        return sanitize_filter_value(v, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_range_value(self) -> "RangeFilterConfig":
+        if self.op == "BETWEEN":
+            if not isinstance(self.value, (list, tuple)) or len(self.value) != 2:
+                raise ValueError(
+                    "Operator 'BETWEEN' requires exactly two values: [start, end]"
+                )
+        elif isinstance(self.value, (list, tuple)):
+            raise ValueError(
+                f"Operator '{self.op}' requires a single value, not a list"
+            )
+        return self
+
+
+class NullFilterConfig(BaseModel):
+    """Nullability filter."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    filter_type: Literal["null_filter"] = "null_filter"
+    column: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        pattern=r"^[a-zA-Z0-9_][a-zA-Z0-9_\s\-\.]*$",
+        validation_alias=AliasChoices("column", "col", "subject"),
+    )
+    op: Literal["IS NULL", "IS NOT NULL"] = Field(
+        ...,
+        validation_alias=AliasChoices("op", "operator", "opr"),
+    )
+
+    @field_validator("column")
+    @classmethod
+    def sanitize_column(cls, v: str) -> str:
+        return sanitize_user_input(v, "Filter column", max_length=255)  # type: ignore[return-value]
+
+
+class TimeFilterConfig(BaseModel):
+    """Temporal range filter with explicit temporal column semantics."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    filter_type: Literal["time_filter"] = "time_filter"
+    column: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        pattern=r"^[a-zA-Z0-9_][a-zA-Z0-9_\s\-\.]*$",
+        validation_alias=AliasChoices("column", "col", "subject"),
+    )
+    time_range: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        validation_alias=AliasChoices("time_range", "value", "val", "comparator"),
+    )
+    time_grain: TimeGrain | None = Field(
+        None,
+        validation_alias=AliasChoices("time_grain", "time_grain_sqla"),
+    )
+
+    @field_validator("column")
+    @classmethod
+    def sanitize_column(cls, v: str) -> str:
+        return sanitize_user_input(v, "Time filter column", max_length=255)  # type: ignore[return-value]
+
+    @field_validator("time_range")
+    @classmethod
+    def sanitize_time_range(cls, v: str) -> str:
+        return sanitize_user_input(v, "Time filter range", max_length=255)  # type: ignore[return-value]
+
+
+def _metric_target_label(metric: ColumnRef | str) -> str:
+    """Normalize a metric filter target into the label used by QueryContext."""
+    if isinstance(metric, str):
+        return sanitize_user_input(metric, "Metric filter target", max_length=255)  # type: ignore[return-value]
+    aggregate = (metric.aggregate or "SUM").upper()
+    return metric.label or f"{aggregate}({metric.name})"
+
+
+class MetricFilterConfig(BaseModel):
+    """Typed metric/HAVING filter for aggregate chart metrics."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    filter_type: Literal["metric_filter"] = "metric_filter"
+    metric: ColumnRef | str = Field(
+        ...,
+        description=(
+            "Metric target for HAVING-style filtering. Prefer the same metric "
+            "definition used in the chart config, or pass the resolved metric label."
+        ),
+        validation_alias=AliasChoices("metric", "metric_name", "subject"),
+    )
+    op: Literal["=", ">", "<", ">=", "<=", "!=", "IN", "NOT IN", "BETWEEN"] = Field(
+        ...,
+        validation_alias=AliasChoices("op", "operator", "opr"),
+    )
+    value: (
+        str
+        | int
+        | float
+        | bool
+        | list[str | int | float | bool]
+        | tuple[str | int | float | bool, str | int | float | bool]
+    ) = Field(
+        ...,
+        description="BETWEEN requires exactly two boundary values.",
+        validation_alias=AliasChoices("value", "val"),
+    )
+
+    @property
+    def column(self) -> str:
+        """Expose a unified target name for shared filter validation helpers."""
+        return _metric_target_label(self.metric)
+
+    @field_validator("value")
+    @classmethod
+    def sanitize_value(
+        cls,
+        v: (
+            str
+            | int
+            | float
+            | bool
+            | list[str | int | float | bool]
+            | tuple[str | int | float | bool, str | int | float | bool]
+        ),
+    ) -> (
+        str
+        | int
+        | float
+        | bool
+        | list[str | int | float | bool]
+        | tuple[str | int | float | bool, str | int | float | bool]
+    ):
+        if isinstance(v, tuple):
+            sanitized_tuple = tuple(
+                sanitize_filter_value(item, max_length=1000) for item in v
+            )
+            if len(sanitized_tuple) == 2:
+                return (sanitized_tuple[0], sanitized_tuple[1])
+            return list(sanitized_tuple)
+        if isinstance(v, list):
+            return [sanitize_filter_value(item, max_length=1000) for item in v]
+        return sanitize_filter_value(v, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_metric_filter_value(self) -> "MetricFilterConfig":
+        if self.op == "BETWEEN":
+            if not isinstance(self.value, (list, tuple)) or len(self.value) != 2:
+                raise ValueError(
+                    "Operator 'BETWEEN' requires exactly two values: [start, end]"
+                )
+        elif isinstance(self.value, (list, tuple)) and self.op not in ("IN", "NOT IN"):
+            raise ValueError(
+                f"Operator '{self.op}' requires a single value, not a list"
+            )
+        elif self.op in ("IN", "NOT IN") and not isinstance(self.value, list):
+            raise ValueError(
+                f"Operator '{self.op}' requires a list of metric filter values"
+            )
+        return self
+
+
+ChartFilterConfig = Annotated[
+    FilterConfig
+    | RangeFilterConfig
+    | NullFilterConfig
+    | TimeFilterConfig
+    | MetricFilterConfig,
+    Field(discriminator="filter_type"),
+]
+
+
 # Actual chart types
 class PieChartConfig(UnknownFieldCheckMixin):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
@@ -637,7 +949,7 @@ class PieChartConfig(UnknownFieldCheckMixin):
     ] = "key_value_percent"
     sort_by_metric: bool = True
     show_legend: bool = True
-    filters: List[FilterConfig] | None = Field(
+    filters: List[ChartFilterConfig] | None = Field(
         None,
         description="Structured filters (column/op/value). "
         "Do NOT use adhoc_filters or raw SQL expressions.",
@@ -688,7 +1000,7 @@ class PivotTableChartConfig(UnknownFieldCheckMixin):
     show_column_totals: bool = True
     transpose: bool = False
     combine_metric: bool = Field(False, description="Metrics side by side in columns")
-    filters: List[FilterConfig] | None = Field(
+    filters: List[ChartFilterConfig] | None = Field(
         None,
         description="Structured filters (column/op/value). "
         "Do NOT use adhoc_filters or raw SQL expressions.",
@@ -744,7 +1056,7 @@ class MixedTimeseriesChartConfig(UnknownFieldCheckMixin):
     x_axis: AxisConfig | None = None
     y_axis: AxisConfig | None = None
     y_axis_secondary: AxisConfig | None = None
-    filters: List[FilterConfig] | None = Field(
+    filters: List[ChartFilterConfig] | None = Field(
         None,
         description="Structured filters (column/op/value). "
         "Do NOT use adhoc_filters or raw SQL expressions.",
@@ -810,7 +1122,9 @@ class HandlebarsChartConfig(UnknownFieldCheckMixin):
             "Each must have an aggregate function (e.g., SUM, COUNT)."
         ),
     )
-    filters: list[FilterConfig] | None = Field(None, description="Filters to apply")
+    filters: list[ChartFilterConfig] | None = Field(
+        None, description="Filters to apply"
+    )
     row_limit: int = Field(
         1000,
         description="Maximum number of rows",
@@ -860,112 +1174,6 @@ class HandlebarsChartConfig(UnknownFieldCheckMixin):
         return self
 
 
-class BigNumberChartConfig(UnknownFieldCheckMixin):
-    model_config = ConfigDict(extra="ignore")
-
-    chart_type: Literal["big_number"] = Field(
-        ...,
-        description=(
-            "Chart type discriminator - MUST be 'big_number'. "
-            "Creates Big Number charts that display a single prominent "
-            "metric value. Set show_trendline=True with a temporal_column "
-            "for a number with trendline, or leave show_trendline=False "
-            "for a standalone number."
-        ),
-    )
-    metric: ColumnRef = Field(
-        ...,
-        description=(
-            "The metric to display as a big number. "
-            "Must include an aggregate function (e.g., SUM, COUNT)."
-        ),
-    )
-    temporal_column: str | None = Field(
-        None,
-        description=(
-            "Temporal column for the trendline x-axis. "
-            "Required when show_trendline is True."
-        ),
-        min_length=1,
-        max_length=255,
-        pattern=r"^[a-zA-Z0-9_][a-zA-Z0-9_\s\-\.]*$",
-    )
-    time_grain: TimeGrain | None = Field(
-        None,
-        description=(
-            "Time granularity for trendline data. "
-            "Common values: PT1H (hour), P1D (day), P1W (week), "
-            "P1M (month), P1Y (year)."
-        ),
-    )
-    show_trendline: bool = Field(
-        False,
-        description=(
-            "Show a trendline below the big number. "
-            "Requires 'temporal_column' to be set."
-        ),
-    )
-    subheader: str | None = Field(
-        None,
-        description="Subtitle text displayed below the big number",
-        max_length=500,
-    )
-    y_axis_format: str | None = Field(
-        None,
-        description=(
-            "Number format string for the metric value "
-            "(e.g., '$,.2f' for currency, ',.0f' for integers, "
-            "'.2%' for percentages)"
-        ),
-        max_length=50,
-    )
-    start_y_axis_at_zero: bool = Field(
-        True,
-        description="Anchor trendline y-axis at zero",
-    )
-    compare_lag: int | None = Field(
-        None,
-        description=(
-            "Number of time periods to compare against. "
-            "Displays a percentage change vs the prior period."
-        ),
-        ge=1,
-    )
-    filters: list[FilterConfig] | None = Field(
-        None,
-        description="Filters to apply",
-    )
-
-    @model_validator(mode="after")
-    def validate_trendline_fields(self) -> Self:
-        """Validate trendline requires temporal column."""
-        if self.show_trendline and not self.temporal_column:
-            raise ValueError(
-                "Big Number chart with show_trendline=True requires "
-                "'temporal_column'. Specify a date/time column for "
-                "the trendline x-axis."
-            )
-        if self.compare_lag and not self.show_trendline:
-            raise ValueError(
-                "compare_lag requires show_trendline=True. "
-                "Period comparison is only available for "
-                "trendline charts."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_metric_aggregate(self) -> Self:
-        """Ensure metric is a valid metric reference (aggregate or saved)."""
-        if not self.metric.is_metric:
-            raise ValueError(
-                "Big Number metric must be either a saved dataset metric "
-                "or include an aggregate function (e.g., SUM, COUNT, AVG). "
-                "Set 'saved_metric': true to use a saved metric, or add "
-                "'aggregate' to the metric specification."
-            )
-        return self
-
-
 class TableChartConfig(UnknownFieldCheckMixin):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
@@ -979,7 +1187,7 @@ class TableChartConfig(UnknownFieldCheckMixin):
         description="Columns with unique labels",
         validation_alias=AliasChoices("columns", "all_columns", "groupby"),
     )
-    filters: List[FilterConfig] | None = Field(
+    filters: List[ChartFilterConfig] | None = Field(
         None,
         description="Structured filters (column/op/value). "
         "Do NOT use adhoc_filters or raw SQL expressions.",
@@ -1058,7 +1266,7 @@ class XYChartConfig(UnknownFieldCheckMixin):
     x_axis: AxisConfig | None = None
     y_axis: AxisConfig | None = None
     legend: LegendConfig | None = None
-    filters: List[FilterConfig] | None = Field(
+    filters: List[ChartFilterConfig] | None = Field(
         None,
         description="Structured filters (column/op/value). "
         "Do NOT use adhoc_filters or raw SQL expressions.",
@@ -1123,6 +1331,407 @@ class XYChartConfig(UnknownFieldCheckMixin):
         return self
 
 
+class FunnelChartConfig(UnknownFieldCheckMixin):
+    """Typed MCP config for funnel charts."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    chart_type: Literal["funnel"] = "funnel"
+    dimension: ColumnRef = Field(
+        ...,
+        description="Funnel step or stage dimension",
+        validation_alias=AliasChoices("dimension", "groupby"),
+    )
+    metric: ColumnRef = Field(
+        ..., description="Funnel metric (needs aggregate e.g. SUM, COUNT)"
+    )
+    percent_calculation_type: Literal["first_step", "previous_step"] = "first_step"
+    show_labels: bool = True
+    show_legend: bool = True
+    show_tooltip_labels: bool = True
+    sort_by_metric: bool = True
+    number_format: str = Field("SMART_NUMBER", max_length=50)
+    color_scheme: str = Field("supersetColors", max_length=100)
+    row_limit: int = Field(10, ge=1, le=10000)
+    filters: List[ChartFilterConfig] | None = Field(
+        None,
+        description="Structured filters (column/op/value). "
+        "Do NOT use adhoc_filters or raw SQL expressions.",
+    )
+
+
+class BigNumberChartConfig(UnknownFieldCheckMixin):
+    """Typed MCP config for big number charts with optional trendline."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    chart_type: Literal["big_number"] = "big_number"
+    metric: ColumnRef = Field(
+        ..., description="KPI metric (needs aggregate e.g. SUM, COUNT)"
+    )
+    show_trend_line: bool = Field(
+        False, validation_alias=AliasChoices("show_trend_line", "trend_line")
+    )
+    x: ColumnRef | None = Field(
+        None,
+        description="Temporal column for trendline mode",
+        validation_alias=AliasChoices("x", "x_axis"),
+    )
+    time_grain: TimeGrain | None = Field(
+        None,
+        validation_alias=AliasChoices("time_grain", "time_grain_sqla"),
+    )
+    start_y_axis_at_zero: bool = True
+    header_font_size: float = Field(0.4, ge=0.1, le=5.0)
+    subheader_font_size: float = Field(0.15, ge=0.05, le=5.0)
+    time_format: str = Field("smart_date", max_length=50)
+    number_format: str = Field(
+        "SMART_NUMBER",
+        max_length=50,
+        validation_alias=AliasChoices("number_format", "y_axis_format"),
+    )
+    filters: List[ChartFilterConfig] | None = Field(
+        None,
+        description="Structured filters (column/op/value). "
+        "Do NOT use adhoc_filters or raw SQL expressions.",
+    )
+
+    @model_validator(mode="after")
+    def validate_trendline_requirements(self) -> "BigNumberChartConfig":
+        if self.show_trend_line and self.x is None:
+            raise ValueError(
+                "Big number charts with show_trend_line=True require an 'x' column."
+            )
+        return self
+
+
+class GaugeChartConfig(UnknownFieldCheckMixin):
+    """Typed MCP config for gauge charts."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    chart_type: Literal["gauge"] = "gauge"
+    metric: ColumnRef = Field(
+        ..., description="Gauge metric (needs aggregate e.g. SUM, COUNT)"
+    )
+    dimension: ColumnRef | None = Field(
+        None,
+        description="Optional grouping dimension",
+        validation_alias=AliasChoices("dimension", "groupby"),
+    )
+    row_limit: int = Field(10, ge=1, le=10000)
+    start_angle: int = Field(225, ge=-360, le=360)
+    end_angle: int = Field(-45, ge=-360, le=360)
+    show_pointer: bool = True
+    show_progress: bool = True
+    show_axis_tick: bool = False
+    show_split_line: bool = False
+    split_number: int = Field(10, ge=1, le=100)
+    font_size: int = Field(13, ge=8, le=72)
+    value_formatter: str = Field("{value}", max_length=100)
+    overlap: bool = True
+    round_cap: bool = False
+    color_scheme: str = Field("supersetColors", max_length=100)
+    number_format: str = Field("SMART_NUMBER", max_length=50)
+    filters: List[ChartFilterConfig] | None = Field(
+        None,
+        description="Structured filters (column/op/value). "
+        "Do NOT use adhoc_filters or raw SQL expressions.",
+    )
+
+
+class HeatmapChartConfig(UnknownFieldCheckMixin):
+    """Typed MCP config for heatmap charts."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    chart_type: Literal["heatmap"] = "heatmap"
+    x: ColumnRef = Field(
+        ...,
+        description="X-axis dimension",
+        validation_alias=AliasChoices("x", "x_axis"),
+    )
+    y: ColumnRef = Field(
+        ...,
+        description="Y-axis dimension",
+        validation_alias=AliasChoices("y", "groupby", "dimension"),
+    )
+    metric: ColumnRef = Field(
+        ..., description="Heatmap metric (needs aggregate e.g. SUM, COUNT)"
+    )
+    time_grain: TimeGrain | None = Field(
+        None,
+        validation_alias=AliasChoices("time_grain", "time_grain_sqla"),
+    )
+    normalize_across: Literal["x", "y", "heatmap"] = "heatmap"
+    show_legend: bool = True
+    show_percentage: bool = False
+    show_values: bool = False
+    sort_x_axis: Literal["alpha_asc", "alpha_desc", "value_asc", "value_desc"] = (
+        "alpha_asc"
+    )
+    sort_y_axis: Literal["alpha_asc", "alpha_desc", "value_asc", "value_desc"] = (
+        "alpha_asc"
+    )
+    linear_color_scheme: str = Field("superset_seq_1", max_length=100)
+    row_limit: int = Field(10000, ge=1, le=50000)
+    value_bounds: list[float | int | None] = Field(
+        default_factory=lambda: [None, None],
+        min_length=2,
+        max_length=2,
+    )
+    x_axis_time_format: str = Field("smart_date", max_length=50)
+    number_format: str = Field(
+        "SMART_NUMBER",
+        max_length=50,
+        validation_alias=AliasChoices("number_format", "y_axis_format"),
+    )
+    filters: List[ChartFilterConfig] | None = Field(
+        None,
+        description="Structured filters (column/op/value). "
+        "Do NOT use adhoc_filters or raw SQL expressions.",
+    )
+
+
+class TreemapChartConfig(UnknownFieldCheckMixin):
+    """Typed MCP config for treemap charts."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    chart_type: Literal["treemap"] = "treemap"
+    dimensions: List[ColumnRef] = Field(
+        ...,
+        min_length=1,
+        description="Ordered hierarchy dimensions for the treemap",
+        validation_alias=AliasChoices("dimensions", "groupby", "columns"),
+    )
+    metric: ColumnRef = Field(
+        ..., description="Treemap metric (needs aggregate e.g. SUM, COUNT)"
+    )
+    show_labels: bool = True
+    show_upper_labels: bool = True
+    label_type: Literal[
+        "key",
+        "value",
+        "percent",
+        "key_value",
+        "key_percent",
+        "key_value_percent",
+        "value_percent",
+    ] = "key_value"
+    row_limit: int = Field(10000, ge=1, le=50000)
+    number_format: str = Field("SMART_NUMBER", max_length=50)
+    color_scheme: str = Field("supersetColors", max_length=100)
+    filters: List[ChartFilterConfig] | None = Field(
+        None,
+        description="Structured filters (column/op/value). "
+        "Do NOT use adhoc_filters or raw SQL expressions.",
+    )
+
+
+class SunburstChartConfig(UnknownFieldCheckMixin):
+    """Typed MCP config for sunburst charts."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    chart_type: Literal["sunburst"] = "sunburst"
+    dimensions: List[ColumnRef] = Field(
+        ...,
+        min_length=1,
+        description="Ordered hierarchy dimensions for the sunburst",
+        validation_alias=AliasChoices("dimensions", "groupby", "columns"),
+    )
+    metric: ColumnRef = Field(
+        ..., description="Sunburst metric (needs aggregate e.g. SUM, COUNT)"
+    )
+    show_labels: bool = True
+    show_labels_threshold: int = Field(5, ge=0, le=100)
+    label_type: Literal[
+        "key",
+        "value",
+        "percent",
+        "key_value",
+        "key_percent",
+        "key_value_percent",
+        "value_percent",
+    ] = "key"
+    row_limit: int = Field(10000, ge=1, le=50000)
+    number_format: str = Field("~g", max_length=50)
+    linear_color_scheme: str = Field("superset_seq_1", max_length=100)
+    filters: List[ChartFilterConfig] | None = Field(
+        None,
+        description="Structured filters (column/op/value). "
+        "Do NOT use adhoc_filters or raw SQL expressions.",
+    )
+
+
+class SankeyChartConfig(UnknownFieldCheckMixin):
+    """Typed MCP config for sankey charts."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    chart_type: Literal["sankey"] = "sankey"
+    source: ColumnRef = Field(..., description="Source dimension for the flow")
+    target: ColumnRef = Field(..., description="Target dimension for the flow")
+    metric: ColumnRef = Field(
+        ..., description="Flow metric (needs aggregate e.g. SUM, COUNT)"
+    )
+    row_limit: int = Field(10000, ge=1, le=50000)
+    color_scheme: str = Field("supersetColors", max_length=100)
+    filters: List[ChartFilterConfig] | None = Field(
+        None,
+        description="Structured filters (column/op/value). "
+        "Do NOT use adhoc_filters or raw SQL expressions.",
+    )
+
+
+class WordCloudChartConfig(UnknownFieldCheckMixin):
+    """Typed MCP config for word cloud charts."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    chart_type: Literal["word_cloud"] = "word_cloud"
+    series: ColumnRef = Field(
+        ...,
+        description="Dimension that provides the displayed words",
+        validation_alias=AliasChoices("series", "dimension", "groupby"),
+    )
+    metric: ColumnRef = Field(
+        ..., description="Word size metric (needs aggregate e.g. SUM, COUNT)"
+    )
+    rotation: str = Field("square", max_length=50)
+    size_from: int = Field(10, ge=1, le=500)
+    size_to: int = Field(70, ge=1, le=1000)
+    row_limit: int = Field(100, ge=1, le=10000)
+    color_scheme: str = Field("supersetColors", max_length=100)
+    filters: List[ChartFilterConfig] | None = Field(
+        None,
+        description="Structured filters (column/op/value). "
+        "Do NOT use adhoc_filters or raw SQL expressions.",
+    )
+
+
+class WorldMapChartConfig(UnknownFieldCheckMixin):
+    """Typed MCP config for world map charts."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    chart_type: Literal["world_map"] = "world_map"
+    entity: ColumnRef = Field(
+        ...,
+        description="Country or geographic entity column",
+        validation_alias=AliasChoices("entity", "country"),
+    )
+    metric: ColumnRef = Field(
+        ..., description="Primary map metric (needs aggregate e.g. SUM, COUNT)"
+    )
+    secondary_metric: ColumnRef | None = Field(
+        None,
+        description="Optional secondary metric used for bubble overlays",
+    )
+    country_fieldtype: str = Field("cca3", max_length=50)
+    show_bubbles: bool = False
+    row_limit: int = Field(50000, ge=1, le=100000)
+    filters: List[ChartFilterConfig] | None = Field(
+        None,
+        description="Structured filters (column/op/value). "
+        "Do NOT use adhoc_filters or raw SQL expressions.",
+    )
+
+
+class BoxPlotChartConfig(UnknownFieldCheckMixin):
+    """Typed MCP config for box plot charts."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    chart_type: Literal["box_plot"] = "box_plot"
+    x: ColumnRef = Field(
+        ...,
+        description="Primary x-axis column for the distribution",
+        validation_alias=AliasChoices("x", "x_axis", AliasPath("columns", 0)),
+    )
+    metric: ColumnRef = Field(
+        ...,
+        description="Metric used to compute the distribution",
+        validation_alias=AliasChoices("metric", AliasPath("metrics", 0)),
+    )
+    group_by: List[ColumnRef] | None = Field(
+        None,
+        description="Optional grouping dimensions for separate box plots",
+        validation_alias=AliasChoices("group_by", "groupby"),
+    )
+    time_grain: TimeGrain | None = Field(
+        None,
+        validation_alias=AliasChoices("time_grain", "time_grain_sqla"),
+    )
+    whisker_options: Literal["Tukey", "Min/max"] = Field(
+        "Tukey",
+        validation_alias=AliasChoices("whisker_options", "whiskerOptions"),
+    )
+    row_limit: int = Field(10000, ge=1, le=50000)
+    number_format: str = Field("SMART_NUMBER", max_length=50)
+    filters: List[ChartFilterConfig] | None = Field(
+        None,
+        description="Structured filters (column/op/value). "
+        "Do NOT use adhoc_filters or raw SQL expressions.",
+    )
+
+    @field_validator("group_by", mode="before")
+    @classmethod
+    def wrap_single_group_by(cls, v: Any) -> Any:
+        return _normalize_group_by_input(v)
+
+
+class BubbleChartConfig(UnknownFieldCheckMixin):
+    """Typed MCP config for bubble charts."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    chart_type: Literal["bubble"] = "bubble"
+    x: ColumnRef = Field(..., description="X-axis metric")
+    y: ColumnRef = Field(..., description="Y-axis metric")
+    size: ColumnRef = Field(..., description="Bubble size metric")
+    series: ColumnRef = Field(
+        ...,
+        description="Series/grouping dimension",
+        validation_alias=AliasChoices("series", "dimension", "groupby"),
+    )
+    entity: ColumnRef | None = Field(
+        None,
+        description="Optional entity/detail dimension",
+    )
+    show_legend: bool = True
+    legend_orientation: Literal["top", "bottom", "left", "right"] = Field(
+        "top",
+        validation_alias=AliasChoices("legend_orientation", "legendOrientation"),
+    )
+    legend_type: Literal["plain", "scroll"] = Field(
+        "scroll",
+        validation_alias=AliasChoices("legend_type", "legendType"),
+    )
+    max_bubble_size: int = Field(25, ge=1, le=100)
+    opacity: float = Field(0.6, ge=0.0, le=1.0)
+    row_limit: int = Field(10000, ge=1, le=50000)
+    order_desc: bool = True
+    truncate_x_axis: bool = Field(
+        True,
+        validation_alias=AliasChoices("truncate_x_axis", "truncateXAxis"),
+    )
+    x_axis_format: str = Field("SMART_NUMBER", max_length=50)
+    y_axis_format: str = Field("SMART_NUMBER", max_length=50)
+    tooltip_size_format: str = Field(
+        "SMART_NUMBER",
+        max_length=50,
+        validation_alias=AliasChoices("tooltip_size_format", "tooltipSizeFormat"),
+    )
+    color_scheme: str = Field("supersetColors", max_length=100)
+    filters: List[ChartFilterConfig] | None = Field(
+        None,
+        description="Structured filters (column/op/value). "
+        "Do NOT use adhoc_filters or raw SQL expressions.",
+    )
+
+
 # Discriminated union entry point with custom error handling
 ChartConfig = Annotated[
     XYChartConfig
@@ -1131,13 +1740,25 @@ ChartConfig = Annotated[
     | PivotTableChartConfig
     | MixedTimeseriesChartConfig
     | HandlebarsChartConfig
-    | BigNumberChartConfig,
+    | FunnelChartConfig
+    | BigNumberChartConfig
+    | GaugeChartConfig
+    | HeatmapChartConfig
+    | TreemapChartConfig
+    | SunburstChartConfig
+    | SankeyChartConfig
+    | WordCloudChartConfig
+    | WorldMapChartConfig
+    | BoxPlotChartConfig
+    | BubbleChartConfig,
     Field(
         discriminator="chart_type",
         description=(
             "Chart configuration - specify chart_type as 'xy', 'table', "
             "'pie', 'pivot_table', 'mixed_timeseries', 'handlebars', "
-            "or 'big_number'"
+            "'funnel', 'big_number', 'gauge', 'heatmap', 'treemap', "
+            "'sunburst', 'sankey', 'word_cloud', 'world_map', "
+            "'box_plot', or 'bubble'"
         ),
     ),
 ]

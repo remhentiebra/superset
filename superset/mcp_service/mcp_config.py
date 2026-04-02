@@ -226,6 +226,7 @@ MCP_RESPONSE_SIZE_CONFIG: Dict[str, Any] = {
         "health_check",  # Always small
         "get_chart_preview",  # Returns URLs, not data
         "generate_explore_link",  # Returns URLs
+        "generate_explore_link_from_saved_query",  # Returns URLs
         "open_sql_lab_with_context",  # Returns URLs
         "search_tools",  # Returns tool schemas for discovery (intentionally large)
     ],

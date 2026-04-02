@@ -43,7 +43,7 @@ from superset.mcp_service.chart.schemas import (
     PerformanceMetadata,
 )
 from superset.mcp_service.utils.cache_utils import get_cache_status_from_result
-from superset.utils.core import merge_extra_filters
+from superset.utils.core import merge_extra_filters, simple_filter_to_adhoc
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +54,41 @@ def _apply_extra_form_data(
     """Merge dashboard native filters into chart form_data in-place."""
     if not extra_form_data:
         return
-    form_data["extra_form_data"] = extra_form_data
+    normalized_extra_form_data = dict(extra_form_data)
+    if appended_filters := normalized_extra_form_data.get("filters"):
+        adhoc_filters = list(normalized_extra_form_data.get("adhoc_filters", []))
+        adhoc_filters.extend(
+            simple_filter_to_adhoc({"isExtra": True, **filter_clause})
+            for filter_clause in appended_filters
+            if filter_clause
+        )
+        normalized_extra_form_data["adhoc_filters"] = adhoc_filters
+    form_data["extra_form_data"] = normalized_extra_form_data
     merge_extra_filters(form_data)
+
+
+def _get_extra_query_filters(
+    extra_form_data: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Return extra simple filters in QueryObject-compatible form."""
+    if not extra_form_data:
+        return []
+
+    extra_filters = extra_form_data.get("filters")
+    if not isinstance(extra_filters, list):
+        return []
+
+    return [dict(filter_clause) for filter_clause in extra_filters if filter_clause]
+
+
+def _merge_query_filters(
+    base_filters: list[dict[str, Any]] | None,
+    extra_form_data: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Merge saved/base query filters with MCP extra_form_data filters."""
+    merged_filters = [dict(filter_clause) for filter_clause in base_filters or []]
+    merged_filters.extend(_get_extra_query_filters(extra_form_data))
+    return merged_filters
 
 
 def _get_cached_form_data(form_data_key: str) -> str | None:
@@ -71,6 +104,33 @@ def _get_cached_form_data(form_data_key: str) -> str | None:
     except (KeyError, ValueError, CommandException) as e:
         logger.warning("Failed to retrieve form_data from cache: %s", e)
         return None
+
+
+def _get_form_data_datasource(form_data: dict[str, Any]) -> tuple[Any, str] | None:
+    """Extract datasource id/type from cached form data."""
+    datasource_id = form_data.get("datasource_id")
+    datasource_type = form_data.get("datasource_type") or "table"
+
+    if datasource_id:
+        return datasource_id, datasource_type
+
+    if datasource := form_data.get("datasource"):
+        parts = str(datasource).split("__")
+        if len(parts) == 2:
+            return parts[0], parts[1]
+
+    return None
+
+
+def _get_form_data_metrics_and_groupby(
+    form_data: dict[str, Any], viz_type: str
+) -> tuple[list[Any], list[str]]:
+    """Extract metrics/groupby from cached form data for the query context."""
+    if viz_type in ("big_number", "big_number_total", "pop_kpi"):
+        metric = form_data.get("metric")
+        return ([metric] if metric else []), []
+
+    return form_data.get("metrics", []), list(form_data.get("groupby") or [])
 
 
 @tool(
@@ -306,7 +366,10 @@ async def get_chart_data(  # noqa: C901
                 _apply_extra_form_data(cached_form_data_dict, request.extra_form_data)
 
                 cached_query: dict[str, Any] = {
-                    "filters": cached_form_data_dict.get("filters", []),
+                    "filters": _merge_query_filters(
+                        cached_form_data_dict.get("filters", []),
+                        request.extra_form_data,
+                    ),
                     "columns": cached_groupby,
                     "metrics": cached_metrics,
                     "row_limit": row_limit,
@@ -503,7 +566,10 @@ async def get_chart_data(  # noqa: C901
                 _apply_extra_form_data(form_data, request.extra_form_data)
 
                 fallback_query: dict[str, Any] = {
-                    "filters": form_data.get("filters", []),
+                    "filters": _merge_query_filters(
+                        form_data.get("filters", []),
+                        request.extra_form_data,
+                    ),
                     "columns": query_columns,
                     "metrics": metrics,
                     "row_limit": row_limit,
@@ -535,6 +601,11 @@ async def get_chart_data(  # noqa: C901
                 # Merge dashboard native filters into query_context's form_data
                 qc_form_data = query_context_json.setdefault("form_data", {})
                 _apply_extra_form_data(qc_form_data, request.extra_form_data)
+                for query in query_context_json.get("queries", []):
+                    query["filters"] = _merge_query_filters(
+                        query.get("filters", []),
+                        request.extra_form_data,
+                    )
 
                 # Create QueryContext from the saved context using the schema
                 # This is exactly how the API does it
@@ -812,48 +883,40 @@ async def _query_from_form_data(
     from superset.commands.chart.data.get_data_command import ChartDataCommand
     from superset.common.query_context_factory import QueryContextFactory
 
-    datasource_id = form_data.get("datasource_id")
-    datasource_type: str = form_data.get("datasource_type") or "table"
-
-    # Handle combined datasource field (e.g., "1__table")
-    if not datasource_id and form_data.get("datasource"):
-        parts = str(form_data["datasource"]).split("__")
-        if len(parts) == 2:
-            datasource_id, datasource_type = parts[0], parts[1]
-
-    if not datasource_id:
+    datasource = _get_form_data_datasource(form_data)
+    if datasource is None:
         return ChartError(
             error="Cached form_data does not contain datasource information.",
             error_type="InvalidFormData",
         )
+    datasource_id, datasource_type = datasource
 
     viz_type = form_data.get("viz_type", "unknown")
     row_limit = (
         request.limit or form_data.get("row_limit") or current_app.config["ROW_LIMIT"]
     )
+    _apply_extra_form_data(form_data, request.extra_form_data)
 
-    # Extract metrics and groupby based on chart type
-    if viz_type in ("big_number", "big_number_total", "pop_kpi"):
-        metric = form_data.get("metric")
-        metrics = [metric] if metric else []
-        groupby: list[str] = []
-    else:
-        metrics = form_data.get("metrics", [])
-        groupby = list(form_data.get("groupby") or [])
+    metrics, groupby = _get_form_data_metrics_and_groupby(form_data, viz_type)
 
     try:
         factory = QueryContextFactory()
+        query: dict[str, Any] = {
+            "filters": _merge_query_filters(
+                form_data.get("filters", []),
+                request.extra_form_data,
+            ),
+            "columns": groupby,
+            "metrics": metrics,
+            "row_limit": row_limit,
+            "order_desc": form_data.get("order_desc", True),
+        }
+        if adhoc_filters := form_data.get("adhoc_filters"):
+            query["adhoc_filters"] = adhoc_filters
+
         query_context = factory.create(
             datasource={"id": datasource_id, "type": datasource_type},
-            queries=[
-                {
-                    "filters": form_data.get("filters", []),
-                    "columns": groupby,
-                    "metrics": metrics,
-                    "row_limit": row_limit,
-                    "order_desc": form_data.get("order_desc", True),
-                }
-            ],
+            queries=[query],
             form_data=form_data,
             force=request.force_refresh,
         )

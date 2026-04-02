@@ -35,7 +35,12 @@ def test_mcp_app_imports_successfully():
     tool_names = [t.name for t in tools]
     assert len(tool_names) > 0
     assert "health_check" in tool_names
+    assert "list_databases" in tool_names
+    assert "get_database_info" in tool_names
     assert "list_charts" in tool_names
+    assert "remove_chart_from_dashboard" in tool_names
+    assert "update_dashboard" in tool_names
+    assert "upsert_dashboard_native_filters" in tool_names
 
 
 def test_mcp_prompts_registered():

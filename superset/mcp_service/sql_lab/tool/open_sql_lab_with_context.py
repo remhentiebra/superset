@@ -55,6 +55,7 @@ def open_sql_lab_with_context(
     Pass the sql parameter to pre-fill the editor. Returns URL for direct navigation.
     """
     try:
+        from superset import security_manager
         from superset.daos.database import DatabaseDAO
 
         with event_logger.log_context(action="mcp.open_sql_lab.db_validation"):
@@ -67,6 +68,14 @@ def open_sql_lab_with_context(
                 schema_name=request.schema_name,
                 title=request.title,
                 error=f"Database with ID {request.database_connection_id} not found",
+            )
+        if not security_manager.can_access_database(database):
+            return SqlLabResponse(
+                url="",
+                database_id=request.database_connection_id,
+                schema_name=request.schema_name,
+                title=request.title,
+                error=f"Access denied to database {database.database_name}",
             )
 
         # Build query parameters for SQL Lab URL
