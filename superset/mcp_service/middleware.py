@@ -793,6 +793,7 @@ class FieldPermissionsMiddleware(Middleware):
     TOOL_OBJECT_TYPE_MAP = {
         "list_datasets": "dataset",
         "get_dataset_info": "dataset",
+        "create_dataset": "dataset",
         "create_virtual_dataset": "dataset",
         "update_dataset_metrics": "dataset",
         "update_dataset_calculated_columns": "dataset",

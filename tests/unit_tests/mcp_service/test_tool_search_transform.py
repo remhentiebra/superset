@@ -20,6 +20,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+from fastmcp.exceptions import ToolError
 from fastmcp.server.transforms.search import BM25SearchTransform, RegexSearchTransform
 
 from superset.mcp_service.mcp_config import MCP_TOOL_SEARCH_CONFIG
@@ -28,6 +30,7 @@ from superset.mcp_service.server import (
     _fix_call_tool_arguments,
     _normalize_call_tool_arguments,
     _serialize_tools_without_output_schema,
+    _validate_call_tool_arguments,
 )
 from superset.utils import json
 
@@ -39,6 +42,7 @@ def test_tool_search_config_defaults():
     assert MCP_TOOL_SEARCH_CONFIG["max_results"] == 5
     assert "health_check" in MCP_TOOL_SEARCH_CONFIG["always_visible"]
     assert "get_instance_info" in MCP_TOOL_SEARCH_CONFIG["always_visible"]
+    assert "create_dataset" in MCP_TOOL_SEARCH_CONFIG["always_visible"]
     assert MCP_TOOL_SEARCH_CONFIG["search_tool_name"] == "search_tools"
     assert MCP_TOOL_SEARCH_CONFIG["call_tool_name"] == "call_tool"
 
@@ -300,3 +304,15 @@ def test_normalize_ignores_keys_not_in_schema():
     result = _normalize_call_tool_arguments(arguments, schema)
 
     assert isinstance(result["unknown_key"], dict)
+
+
+def test_validate_call_tool_arguments_rejects_missing_required_params():
+    """Missing top-level call_tool params should fail before tool execution."""
+    schema = {
+        "type": "object",
+        "properties": {"request": {"type": "object"}},
+        "required": ["request"],
+    }
+
+    with pytest.raises(ToolError, match="missing required parameter"):
+        _validate_call_tool_arguments("create_dataset", {}, schema)

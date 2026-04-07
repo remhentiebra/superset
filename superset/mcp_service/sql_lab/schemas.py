@@ -462,6 +462,110 @@ class GenerateChartFromSavedQueryRequest(BaseModel):
         return self
 
 
+class SqlChartPromotionRequestBase(BaseModel):
+    """Shared fields for raw SQL dataset-promotion workflows."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    database_id: int = Field(..., description="Database connection ID")
+    sql: str = Field(
+        ...,
+        min_length=1,
+        description="SQL query used to build the intermediate virtual dataset",
+    )
+    table_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=250,
+        description="Stable name for the intermediate virtual dataset",
+    )
+    schema_name: str | None = Field(
+        None,
+        alias="schema",
+        description="Optional schema for the intermediate virtual dataset",
+    )
+    catalog: str | None = Field(
+        None,
+        description="Optional catalog for the intermediate virtual dataset",
+    )
+    template_params: dict[str, Any] | None = Field(
+        None,
+        description="Optional Jinja template parameters for the SQL query",
+    )
+    dataset_description: str | None = Field(
+        None,
+        description="Optional intermediate dataset description override",
+    )
+    owners: list[int] = Field(
+        default_factory=list,
+        description="Optional owner user IDs for the created dataset",
+    )
+    normalize_columns: bool = Field(
+        default=False,
+        description="Whether Superset should normalize column names on dataset fetch",
+    )
+    always_filter_main_dttm: bool = Field(
+        default=False,
+        description="Whether the main datetime column should always be filtered",
+    )
+
+    @field_validator("sql", "table_name")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be empty")
+        return value
+
+
+class GenerateChartFromSqlRequest(SqlChartPromotionRequestBase):
+    """Request schema for promoting raw SQL into a chart workflow."""
+
+    config: ChartConfig = Field(..., description="Typed chart configuration")
+    chart_name: str | None = Field(
+        None,
+        max_length=255,
+        description="Optional chart name override",
+    )
+    save_chart: bool = Field(
+        default=False,
+        description="Save the generated chart permanently in Superset",
+    )
+    generate_preview: bool = Field(
+        default=True,
+        description="Generate chart previews alongside the response",
+    )
+    preview_formats: list[Literal["url", "ascii", "vega_lite", "table"]] = Field(
+        default_factory=lambda: ["url"],
+        description="Preview formats to request from the generated chart",
+    )
+
+    @field_validator("chart_name")
+    @classmethod
+    def strip_optional_chart_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("chart_name cannot be an empty string")
+        return value
+
+    @model_validator(mode="after")
+    def validate_chart_output_request(self) -> "GenerateChartFromSqlRequest":
+        if not self.save_chart and not self.generate_preview:
+            raise ValueError(
+                "At least one of save_chart or generate_preview must be true"
+            )
+        return self
+
+
+class GenerateExploreLinkFromSqlRequest(
+    SqlChartPromotionRequestBase,
+    FormDataCacheControl,
+):
+    """Request schema for promoting raw SQL into an explore-link workflow."""
+
+
 class GenerateExploreLinkFromSavedQueryRequest(FormDataCacheControl):
     """Request schema for promoting a saved query into an explore-link workflow."""
 
@@ -520,6 +624,23 @@ class GenerateChartFromSavedQueryResponse(BaseModel):
     )
 
 
+class GenerateChartFromSqlResponse(BaseModel):
+    """Combined response for raw-SQL dataset and chart promotion."""
+
+    dataset: DatasetInfo | None = Field(
+        None,
+        description="The intermediate virtual dataset created from the SQL query",
+    )
+    dataset_error: DatasetError | None = Field(
+        None,
+        description="Structured dataset creation error, if promotion failed early",
+    )
+    chart_response: GenerateChartResponse | None = Field(
+        None,
+        description="The chart response generated from that dataset",
+    )
+
+
 class ExploreLinkResponse(BaseModel):
     """Typed explore-link payload returned by explore URL workflows."""
 
@@ -544,6 +665,23 @@ class GenerateExploreLinkFromSavedQueryResponse(BaseModel):
     dataset: DatasetInfo | None = Field(
         None,
         description="The intermediate virtual dataset created from the saved query",
+    )
+    dataset_error: DatasetError | None = Field(
+        None,
+        description="Structured dataset creation error, if promotion failed early",
+    )
+    explore_response: ExploreLinkResponse | None = Field(
+        None,
+        description="The explore-link response generated from that dataset",
+    )
+
+
+class GenerateExploreLinkFromSqlResponse(BaseModel):
+    """Combined response for raw-SQL dataset and explore-link promotion."""
+
+    dataset: DatasetInfo | None = Field(
+        None,
+        description="The intermediate virtual dataset created from the SQL query",
     )
     dataset_error: DatasetError | None = Field(
         None,

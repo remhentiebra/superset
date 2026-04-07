@@ -38,7 +38,9 @@ from superset.mcp_service.dataset.schemas import DatasetError, DatasetInfo
 from superset.mcp_service.sql_lab.schemas import (
     CreateVirtualDatasetFromSavedQueryRequest,
     GenerateChartFromSavedQueryRequest,
+    GenerateChartFromSqlRequest,
     GenerateExploreLinkFromSavedQueryRequest,
+    GenerateExploreLinkFromSqlRequest,
     GetSavedQueryRequest,
     ListSavedQueriesRequest,
 )
@@ -133,6 +135,19 @@ class TestSavedQuerySchemas:
                     columns=[ColumnRef(name="revenue", aggregate="SUM")],
                 ),
             )
+
+    def test_generate_chart_from_sql_strips_required_text(self) -> None:
+        request = GenerateChartFromSqlRequest(
+            database_id=5,
+            sql="  SELECT SUM(revenue) FROM sales  ",
+            table_name="  revenue_dataset  ",
+            config=TableChartConfig(
+                chart_type="table",
+                columns=[ColumnRef(name="revenue", aggregate="SUM")],
+            ),
+        )
+        assert request.sql == "SELECT SUM(revenue) FROM sales"
+        assert request.table_name == "revenue_dataset"
 
 
 class TestSavedQueryTools:
@@ -493,5 +508,176 @@ class TestSavedQueryTools:
             assert result.dataset_error.error_type == "CreateFailed"
             assert result.explore_response is None
             generate_explore_link.assert_not_called()
+        finally:
+            _restore_modules(saved_modules)
+
+    @pytest.mark.anyio
+    async def test_generate_chart_from_sql_builds_dataset_and_chart(self) -> None:
+        mod, saved_modules = _import_tool_module(
+            "superset.mcp_service.sql_lab.tool.generate_chart_from_sql"
+        )
+        try:
+            mock_ctx = _make_mock_ctx()
+            command = MagicMock()
+            command.run.return_value = MagicMock(id=9)
+            event_logger = MagicMock()
+            event_logger.log_context.return_value.__enter__ = Mock()
+            event_logger.log_context.return_value.__exit__ = Mock(return_value=False)
+            serialized_dataset = DatasetInfo(
+                id=9, table_name="revenue_dataset", schema="example_schema"
+            )
+            chart_response = GenerateChartResponse(
+                success=True,
+                form_data={},
+                performance={
+                    "query_duration_ms": 3,
+                    "cache_status": "miss",
+                    "optimization_suggestions": [],
+                },
+            )
+
+            with (
+                patch.object(
+                    mod, "CreateDatasetCommand", return_value=command
+                ) as create_command,
+                patch.object(mod, "serialize_dataset", return_value=serialized_dataset),
+                patch.object(
+                    mod, "generate_chart", AsyncMock(return_value=chart_response)
+                ) as generate_chart,
+                patch.object(mod, "event_logger", event_logger),
+            ):
+                result = await mod.generate_chart_from_sql(
+                    GenerateChartFromSqlRequest(
+                        database_id=5,
+                        sql="SELECT SUM(revenue) FROM sales",
+                        table_name="revenue_dataset",
+                        config=TableChartConfig(
+                            chart_type="table",
+                            columns=[ColumnRef(name="revenue", aggregate="SUM")],
+                        ),
+                        save_chart=True,
+                    ),
+                    mock_ctx,
+                )
+
+            assert result.dataset.id == 9
+            assert result.chart_response.success is True
+            payload = create_command.call_args.args[0]
+            assert payload["database"] == 5
+            assert payload["table_name"] == "revenue_dataset"
+            chart_request = generate_chart.call_args.args[0]
+            assert chart_request.dataset_id == 9
+            assert chart_request.save_chart is True
+            assert (
+                "dataset_create" in result.chart_response.performance.stage_durations_ms
+            )
+            assert (
+                "chart_generation"
+                in result.chart_response.performance.stage_durations_ms
+            )
+        finally:
+            _restore_modules(saved_modules)
+
+    @pytest.mark.anyio
+    async def test_generate_chart_from_sql_returns_dataset_error(self) -> None:
+        mod, saved_modules = _import_tool_module(
+            "superset.mcp_service.sql_lab.tool.generate_chart_from_sql"
+        )
+        try:
+            mock_ctx = _make_mock_ctx()
+            command = MagicMock()
+            command.run.side_effect = DatasetCreateFailedError("insert failed")
+            event_logger = MagicMock()
+            event_logger.log_context.return_value.__enter__ = Mock()
+            event_logger.log_context.return_value.__exit__ = Mock(return_value=False)
+
+            with (
+                patch.object(mod, "CreateDatasetCommand", return_value=command),
+                patch.object(mod, "event_logger", event_logger),
+                patch.object(mod, "generate_chart", AsyncMock()) as generate_chart,
+            ):
+                result = await mod.generate_chart_from_sql(
+                    GenerateChartFromSqlRequest(
+                        database_id=5,
+                        sql="SELECT SUM(revenue) FROM sales",
+                        table_name="revenue_dataset",
+                        config=TableChartConfig(
+                            chart_type="table",
+                            columns=[ColumnRef(name="revenue", aggregate="SUM")],
+                        ),
+                    ),
+                    mock_ctx,
+                )
+
+            assert result.dataset is None
+            assert result.dataset_error is not None
+            assert result.dataset_error.error_type == "CreateFailed"
+            assert result.chart_response is None
+            generate_chart.assert_not_called()
+        finally:
+            _restore_modules(saved_modules)
+
+    @pytest.mark.anyio
+    async def test_generate_explore_link_from_sql_builds_dataset_and_link(self) -> None:
+        mod, saved_modules = _import_tool_module(
+            "superset.mcp_service.sql_lab.tool.generate_explore_link_from_sql"
+        )
+        try:
+            mock_ctx = _make_mock_ctx()
+            command = MagicMock()
+            command.run.return_value = MagicMock(id=9)
+            event_logger = MagicMock()
+            event_logger.log_context.return_value.__enter__ = Mock()
+            event_logger.log_context.return_value.__exit__ = Mock(return_value=False)
+            serialized_dataset = DatasetInfo(
+                id=9, table_name="revenue_dataset", schema="example_schema"
+            )
+
+            with (
+                patch.object(
+                    mod, "CreateDatasetCommand", return_value=command
+                ) as create_command,
+                patch.object(mod, "serialize_dataset", return_value=serialized_dataset),
+                patch.object(
+                    mod,
+                    "generate_explore_link",
+                    AsyncMock(
+                        return_value={
+                            "url": "http://localhost:8088/explore/?form_data_key=abc",
+                            "form_data": {"viz_type": "table"},
+                            "form_data_key": "abc",
+                            "error": None,
+                        }
+                    ),
+                ) as generate_explore_link,
+                patch.object(mod, "event_logger", event_logger),
+            ):
+                result = await mod.generate_explore_link_from_sql(
+                    GenerateExploreLinkFromSqlRequest(
+                        database_id=5,
+                        sql="SELECT SUM(revenue) FROM sales",
+                        table_name="revenue_dataset",
+                        use_cache=False,
+                        force_refresh=True,
+                        cache_form_data=False,
+                        config=TableChartConfig(
+                            chart_type="table",
+                            columns=[ColumnRef(name="revenue", aggregate="SUM")],
+                        ),
+                    ),
+                    mock_ctx,
+                )
+
+            payload = create_command.call_args.args[0]
+            assert payload["database"] == 5
+            assert payload["table_name"] == "revenue_dataset"
+            explore_request = generate_explore_link.call_args.args[0]
+            assert explore_request.dataset_id == 9
+            assert explore_request.use_cache is False
+            assert explore_request.force_refresh is True
+            assert explore_request.cache_form_data is False
+            assert result.dataset.id == 9
+            assert result.explore_response.form_data_key == "abc"
+            assert result.explore_response.error is None
         finally:
             _restore_modules(saved_modules)

@@ -35,11 +35,14 @@ from superset.mcp_service.chart.chart_utils import (
     generate_chart_name,
     map_config_to_form_data,
 )
+from superset.mcp_service.chart.performance_utils import (
+    build_performance_metadata,
+    record_stage,
+)
 from superset.mcp_service.chart.schemas import (
     AccessibilityMetadata,
     GenerateChartResponse,
     parse_chart_config,
-    PerformanceMetadata,
     UpdateChartRequest,
 )
 from superset.mcp_service.utils.url_utils import get_superset_base_url
@@ -165,11 +168,13 @@ async def update_chart(
     - Updated chart info and metadata
     - Preview URL and explore URL for further editing
     """
-    start_time = time.time()
+    total_start_time = time.perf_counter()
+    stage_durations_ms: dict[str, int] = {}
 
     try:
-        with event_logger.log_context(action="mcp.update_chart.chart_lookup"):
-            chart = _find_chart(request.identifier)
+        with record_stage(stage_durations_ms, "chart_lookup"):
+            with event_logger.log_context(action="mcp.update_chart.chart_lookup"):
+                chart = _find_chart(request.identifier)
 
         if not chart:
             return GenerateChartResponse.model_validate(
@@ -216,13 +221,15 @@ async def update_chart(
         # Build update payload (config update or name-only rename)
         from superset.commands.chart.update import UpdateChartCommand
 
-        payload_or_error = _build_update_payload(request, chart)
+        with record_stage(stage_durations_ms, "form_data_mapping"):
+            payload_or_error = _build_update_payload(request, chart)
         if isinstance(payload_or_error, GenerateChartResponse):
             return payload_or_error
 
-        with event_logger.log_context(action="mcp.update_chart.db_write"):
-            command = UpdateChartCommand(chart.id, payload_or_error)
-            updated_chart = command.run()
+        with record_stage(stage_durations_ms, "save"):
+            with event_logger.log_context(action="mcp.update_chart.db_write"):
+                command = UpdateChartCommand(chart.id, payload_or_error)
+                updated_chart = command.run()
 
         # Parse config for analysis (may be None for name-only updates)
         config = parse_chart_config(request.config) if request.config else None
@@ -230,14 +237,6 @@ async def update_chart(
         # Generate semantic analysis
         capabilities = analyze_chart_capabilities(updated_chart, config)
         semantics = analyze_chart_semantics(updated_chart, config)
-
-        # Create performance metadata
-        execution_time = int((time.time() - start_time) * 1000)
-        performance = PerformanceMetadata(
-            query_duration_ms=execution_time,
-            cache_status="miss",
-            optimization_suggestions=[],
-        )
 
         # Create accessibility metadata
         chart_name = (
@@ -255,29 +254,31 @@ async def update_chart(
         previews = {}
         if request.generate_preview:
             try:
-                with event_logger.log_context(action="mcp.update_chart.preview"):
-                    from superset.mcp_service.chart.tool.get_chart_preview import (
-                        _get_chart_preview_internal,
-                        GetChartPreviewRequest,
-                    )
-
-                    for format_type in request.preview_formats:
-                        preview_request = GetChartPreviewRequest(
-                            identifier=str(updated_chart.id),
-                            format=format_type,
-                        )
-                        preview_result = await _get_chart_preview_internal(
-                            preview_request, ctx
+                with record_stage(stage_durations_ms, "preview_generation"):
+                    with event_logger.log_context(action="mcp.update_chart.preview"):
+                        from superset.mcp_service.chart.tool.get_chart_preview import (
+                            _get_chart_preview_internal,
+                            GetChartPreviewRequest,
                         )
 
-                        if hasattr(preview_result, "content"):
-                            previews[format_type] = preview_result.content
+                        for format_type in request.preview_formats:
+                            preview_request = GetChartPreviewRequest(
+                                identifier=str(updated_chart.id),
+                                format=format_type,
+                            )
+                            preview_result = await _get_chart_preview_internal(
+                                preview_request, ctx
+                            )
+
+                            if hasattr(preview_result, "content"):
+                                previews[format_type] = preview_result.content
 
             except Exception as e:
                 # Log warning but don't fail the entire request
                 logger.warning("Preview generation failed: %s", e)
 
         # Return enhanced data
+        response_assembly_start = time.perf_counter()
         result = {
             "chart": {
                 "id": updated_chart.id,
@@ -305,12 +306,22 @@ async def update_chart(
                     f"{get_superset_base_url()}/api/v1/chart/{updated_chart.id}/export/"
                 ),
             },
-            "performance": performance.model_dump() if performance else None,
+            "performance": None,
             "accessibility": accessibility.model_dump() if accessibility else None,
             "success": True,
             "schema_version": "2.0",
             "api_version": "v1",
         }
+        stage_durations_ms["response_assembly"] = int(
+            (time.perf_counter() - response_assembly_start) * 1000
+        )
+        performance = build_performance_metadata(
+            total_start_time=total_start_time,
+            cache_status="miss",
+            optimization_suggestions=[],
+            stage_durations_ms=stage_durations_ms,
+        )
+        result["performance"] = performance.model_dump()
         return GenerateChartResponse.model_validate(result)
 
     except (
@@ -328,7 +339,6 @@ async def update_chart(
             logger.warning(
                 "Database rollback failed during error handling", exc_info=True
             )
-        execution_time = int((time.time() - start_time) * 1000)
         return GenerateChartResponse.model_validate(
             {
                 "chart": None,
@@ -337,11 +347,11 @@ async def update_chart(
                     "message": f"Chart update failed: {e}",
                     "details": str(e),
                 },
-                "performance": {
-                    "query_duration_ms": execution_time,
-                    "cache_status": "error",
-                    "optimization_suggestions": [],
-                },
+                "performance": build_performance_metadata(
+                    total_start_time=total_start_time,
+                    cache_status="error",
+                    stage_durations_ms=stage_durations_ms,
+                ).model_dump(),
                 "success": False,
                 "schema_version": "2.0",
                 "api_version": "v1",

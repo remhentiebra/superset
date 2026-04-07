@@ -26,8 +26,14 @@ from superset.mcp_service.sql_lab.tool.execute_sql import execute_sql
 from superset.mcp_service.sql_lab.tool.generate_chart_from_saved_query import (
     generate_chart_from_saved_query,
 )
+from superset.mcp_service.sql_lab.tool.generate_chart_from_sql import (
+    generate_chart_from_sql,
+)
 from superset.mcp_service.sql_lab.tool.generate_explore_link_from_saved_query import (
     generate_explore_link_from_saved_query,
+)
+from superset.mcp_service.sql_lab.tool.generate_explore_link_from_sql import (
+    generate_explore_link_from_sql,
 )
 from superset.mcp_service.sql_lab.tool.get_saved_query import get_saved_query
 from superset.mcp_service.sql_lab.tool.list_saved_queries import list_saved_queries
@@ -40,7 +46,9 @@ __all__ = [
     "execute_sql",
     "list_saved_queries",
     "get_saved_query",
+    "generate_chart_from_sql",
     "generate_chart_from_saved_query",
+    "generate_explore_link_from_sql",
     "generate_explore_link_from_saved_query",
     "open_sql_lab_with_context",
     "save_sql_query",

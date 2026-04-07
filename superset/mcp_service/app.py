@@ -67,6 +67,7 @@ Database Connections:
 Dataset Management:
 - list_datasets: List datasets with advanced filters (1-based pagination)
 - get_dataset_info: Get detailed dataset information by ID (includes columns/metrics)
+- create_dataset: Create a SQL-backed virtual dataset from typed SQL input
 - create_virtual_dataset: Create a virtual dataset from typed SQL input
 - update_dataset_metadata: Update dataset metadata and virtual dataset SQL safely
 - update_dataset_metrics: Create, update, or remove dataset metrics with typed payloads
@@ -87,6 +88,10 @@ SQL Lab Integration:
 - list_saved_queries: List the current user's saved SQL Lab queries
 - get_saved_query: Get one saved SQL query by ID
 - save_sql_query: Save a SQL query to Saved Queries list
+- generate_chart_from_sql:
+  Promote raw SQL into a virtual dataset and chart
+- generate_explore_link_from_sql:
+  Promote raw SQL into a virtual dataset and explore link
 - create_virtual_dataset_from_saved_query: Promote a saved query into a virtual dataset
 - generate_chart_from_saved_query:
   Promote a saved query into a virtual dataset and chart
@@ -153,14 +158,18 @@ To explore data with SQL:
 3. execute_sql(database_id, sql) -> run query
 4. save_sql_query(database_id, label, sql) -> save query for later reuse
 5. list_saved_queries or get_saved_query -> rediscover saved work
-6. create_virtual_dataset(database_id, table_name, sql) or
+6. create_dataset(database_id, table_name, sql) or create_virtual_dataset(...) or
    create_virtual_dataset_from_saved_query ->
    promote reusable SQL into dataset metadata
-7. generate_chart_from_saved_query(saved_query_id, config) ->
+7. generate_chart_from_sql(database_id, sql, table_name, config) ->
+   turn raw SQL directly into a chart workflow
+8. generate_explore_link_from_sql(database_id, sql, table_name, config) ->
+   preview raw SQL as an interactive explore workflow
+9. generate_chart_from_saved_query(saved_query_id, config) ->
    turn saved SQL directly into a chart workflow
-8. generate_explore_link_from_saved_query(saved_query_id, config) ->
+10. generate_explore_link_from_saved_query(saved_query_id, config) ->
    preview a saved query as an interactive explore workflow
-9. open_sql_lab_with_context(database_id) -> open SQL Lab UI
+11. open_sql_lab_with_context(database_id) -> open SQL Lab UI
 
 generate_explore_link vs generate_chart:
 - Use generate_explore_link for exploration (no permanent chart created)
@@ -250,7 +259,8 @@ IMPORTANT - Tool-Only Interaction:
   generate_dashboard, update_dashboard, add_chart_to_existing_dashboard,
   remove_chart_from_dashboard, and upsert_dashboard_native_filters for dashboard
   operations.
-- For dataset authoring, prefer create_virtual_dataset,
+- For dataset authoring, prefer create_dataset,
+  create_virtual_dataset,
   update_dataset_metrics, and update_dataset_calculated_columns instead of
   describing raw REST payloads.
 - update_dashboard supports typed layout controls. Use chart_ids for a simple
@@ -507,6 +517,7 @@ from superset.mcp_service.database.tool import (  # noqa: F401, E402
     list_databases,
 )
 from superset.mcp_service.dataset.tool import (  # noqa: F401, E402
+    create_dataset,
     create_virtual_dataset,
     get_dataset_info,
     list_datasets,
@@ -521,7 +532,9 @@ from superset.mcp_service.sql_lab.tool import (  # noqa: F401, E402
     create_virtual_dataset_from_saved_query,
     execute_sql,
     generate_chart_from_saved_query,
+    generate_chart_from_sql,
     generate_explore_link_from_saved_query,
+    generate_explore_link_from_sql,
     get_saved_query,
     list_saved_queries,
     open_sql_lab_with_context,
@@ -532,11 +545,11 @@ from superset.mcp_service.system import (  # noqa: F401, E402
     resources as system_resources,
 )
 from superset.mcp_service.system.tool import (  # noqa: F401, E402
-    get_database_info,
+    get_database_info as _system_get_database_info,
     get_instance_info,
     get_schema,
     health_check,
-    list_databases,
+    list_databases as _system_list_databases,
 )
 
 

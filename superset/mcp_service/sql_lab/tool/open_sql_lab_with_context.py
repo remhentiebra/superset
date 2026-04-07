@@ -22,6 +22,7 @@ Tool for generating SQL Lab URLs with pre-populated sql and context.
 """
 
 import logging
+from typing import Any
 from urllib.parse import urlencode
 
 from fastmcp import Context
@@ -35,6 +36,59 @@ from superset.mcp_service.sql_lab.schemas import (
 from superset.mcp_service.utils.url_utils import get_superset_base_url
 
 logger = logging.getLogger(__name__)
+
+
+def _build_context_sql(
+    database_name: str,
+    dataset_name: str,
+    schema_name: str | None,
+) -> str:
+    context_comment = (
+        f"-- Context: Working with dataset '{dataset_name}'\n"
+        f"-- Database: {database_name}\n"
+    )
+    if schema_name:
+        context_comment += f"-- Schema: {schema_name}\n"
+        table_reference = f"{schema_name}.{dataset_name}"
+    else:
+        table_reference = dataset_name
+
+    return f"{context_comment}\nSELECT * FROM {table_reference} LIMIT 100;"
+
+
+def _build_sql_lab_params(
+    request: OpenSqlLabRequest,
+    database_name: str,
+) -> dict[str, str]:
+    params = {
+        "dbid": str(request.database_connection_id),
+    }
+    if request.schema_name:
+        params["schema"] = request.schema_name
+    if request.sql:
+        params["sql"] = request.sql
+    if request.title:
+        params["title"] = request.title
+    if request.dataset_in_context and not request.sql:
+        params["sql"] = _build_context_sql(
+            database_name,
+            request.dataset_in_context,
+            request.schema_name,
+        )
+    return params
+
+
+def _get_accessible_database(database_id: int) -> tuple[Any | None, str | None]:
+    from superset import security_manager
+    from superset.daos.database import DatabaseDAO
+
+    with event_logger.log_context(action="mcp.open_sql_lab.db_validation"):
+        database = DatabaseDAO.find_by_id(database_id)
+    if not database:
+        return None, f"Database with ID {database_id} not found"
+    if not security_manager.can_access_database(database):
+        return None, f"Access denied to database {database.database_name}"
+    return database, None
 
 
 @tool(
@@ -55,60 +109,18 @@ def open_sql_lab_with_context(
     Pass the sql parameter to pre-fill the editor. Returns URL for direct navigation.
     """
     try:
-        from superset import security_manager
-        from superset.daos.database import DatabaseDAO
-
-        with event_logger.log_context(action="mcp.open_sql_lab.db_validation"):
-            # Validate database exists and is accessible
-            database = DatabaseDAO.find_by_id(request.database_connection_id)
-        if not database:
+        database, error = _get_accessible_database(request.database_connection_id)
+        if error:
             return SqlLabResponse(
                 url="",
                 database_id=request.database_connection_id,
                 schema_name=request.schema_name,
                 title=request.title,
-                error=f"Database with ID {request.database_connection_id} not found",
+                error=error,
             )
-        if not security_manager.can_access_database(database):
-            return SqlLabResponse(
-                url="",
-                database_id=request.database_connection_id,
-                schema_name=request.schema_name,
-                title=request.title,
-                error=f"Access denied to database {database.database_name}",
-            )
+        assert database is not None
 
-        # Build query parameters for SQL Lab URL
-        params = {
-            "dbid": str(request.database_connection_id),
-        }
-
-        if request.schema_name:
-            params["schema"] = request.schema_name
-
-        if request.sql:
-            params["sql"] = request.sql
-
-        if request.title:
-            params["title"] = request.title
-
-        if request.dataset_in_context:
-            # Add dataset context as a comment in the SQL if no SQL provided
-            if not request.sql:
-                context_comment = (
-                    f"-- Context: Working with dataset '{request.dataset_in_context}'\n"
-                    f"-- Database: {database.database_name}\n"
-                )
-                if request.schema_name:
-                    context_comment += f"-- Schema: {request.schema_name}\n"
-                    table_reference = (
-                        f"{request.schema_name}.{request.dataset_in_context}"
-                    )
-                else:
-                    table_reference = request.dataset_in_context
-
-                context_comment += f"\nSELECT * FROM {table_reference} LIMIT 100;"
-                params["sql"] = context_comment
+        params = _build_sql_lab_params(request, database.database_name)
 
         # Construct SQL Lab URL with full base URL
         query_string = urlencode(params)

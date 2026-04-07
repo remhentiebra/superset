@@ -246,6 +246,87 @@ def _normalize_call_tool_arguments(
     return result
 
 
+def _validate_call_tool_arguments(
+    tool_name: str,
+    arguments: dict[str, Any] | None,
+    tool_schema: dict[str, Any] | None,
+) -> None:
+    """Validate top-level ``call_tool`` arguments before forwarding."""
+    from fastmcp.exceptions import ToolError
+
+    if not isinstance(tool_schema, dict):
+        return
+
+    required_arguments = tool_schema.get("required") or []
+    missing_arguments = [
+        argument
+        for argument in required_arguments
+        if not arguments or argument not in arguments
+    ]
+    if not missing_arguments:
+        return
+
+    missing_text = ", ".join(sorted(missing_arguments))
+    raise ToolError(
+        f"Invalid arguments for {tool_name}: missing required parameter(s): "
+        f"{missing_text}"
+    )
+
+
+def _build_tool_search_transform_kwargs(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "max_results": config.get("max_results", 5),
+        "always_visible": config.get("always_visible", []),
+        "search_tool_name": config.get("search_tool_name", "search_tools"),
+        "call_tool_name": config.get("call_tool_name", "call_tool"),
+        "search_result_serializer": _serialize_tools_without_output_schema,
+    }
+
+
+def _make_normalizing_call_tool(transform: Any) -> Any:
+    from fastmcp.server.context import Context
+    from fastmcp.tools.tool import Tool, ToolResult
+
+    async def call_tool(
+        name: Annotated[str, "The name of the tool to call"],
+        arguments: Annotated[
+            dict[str, Any] | None, "Arguments to pass to the tool"
+        ] = None,
+        ctx: Context = None,
+    ) -> ToolResult:
+        """Call a tool by name with the given arguments.
+
+        Use this to execute tools discovered via search_tools.
+        """
+        from fastmcp.exceptions import ToolError
+
+        if name in {transform._call_tool_name, transform._search_tool_name}:
+            raise ValueError(
+                f"'{name}' is a synthetic search tool and cannot be "
+                f"called via the call_tool proxy"
+            )
+        target_tool = await ctx.fastmcp.get_tool(name)
+        if target_tool is None:
+            raise ToolError(
+                f"Unknown tool '{name}'. Use {transform._search_tool_name} "
+                f"to discover available tools."
+            )
+
+        _validate_call_tool_arguments(name, arguments, target_tool.parameters)
+
+        if arguments and target_tool is not None:
+            arguments = _normalize_call_tool_arguments(
+                arguments, target_tool.parameters
+            )
+        try:
+            return await ctx.fastmcp.call_tool(name, arguments)
+        except TypeError as ex:
+            raise ToolError(f"Invalid arguments for {name}: {str(ex)}") from ex
+
+    tool = Tool.from_function(fn=call_tool, name=transform._call_tool_name)
+    return _fix_call_tool_arguments(tool)
+
+
 def _apply_tool_search_transform(mcp_instance: Any, config: dict[str, Any]) -> None:
     """Apply tool search transform to reduce initial context size.
 
@@ -261,54 +342,8 @@ def _apply_tool_search_transform(mcp_instance: Any, config: dict[str, Any]) -> N
     (fastmcp>=3.1.0,<4.0). If FastMCP changes or removes this method
     in a future major version, these subclasses will need to be updated.
     """
-    from fastmcp.server.context import Context
-    from fastmcp.tools.tool import Tool, ToolResult
-
     strategy = config.get("strategy", "bm25")
-    kwargs: dict[str, Any] = {
-        "max_results": config.get("max_results", 5),
-        "always_visible": config.get("always_visible", []),
-        "search_tool_name": config.get("search_tool_name", "search_tools"),
-        "call_tool_name": config.get("call_tool_name", "call_tool"),
-        "search_result_serializer": _serialize_tools_without_output_schema,
-    }
-
-    def _make_normalizing_call_tool(transform: Any) -> Tool:
-        """Create a call_tool proxy that normalizes arguments before forwarding.
-
-        This fixes two issues:
-        1. anyOf schema incompatibility with MCP bridges (schema fix).
-        2. ``encoding without a string argument`` TypeError when dict/list
-           values are forwarded for parameters declared as
-           ``str | SomeModel`` (argument normalization).
-        """
-
-        async def call_tool(
-            name: Annotated[str, "The name of the tool to call"],
-            arguments: Annotated[
-                dict[str, Any] | None, "Arguments to pass to the tool"
-            ] = None,
-            ctx: Context = None,
-        ) -> ToolResult:
-            """Call a tool by name with the given arguments.
-
-            Use this to execute tools discovered via search_tools.
-            """
-            if name in {transform._call_tool_name, transform._search_tool_name}:
-                raise ValueError(
-                    f"'{name}' is a synthetic search tool and cannot be "
-                    f"called via the call_tool proxy"
-                )
-            if arguments:
-                target_tool = await ctx.fastmcp.get_tool(name)
-                if target_tool is not None:
-                    arguments = _normalize_call_tool_arguments(
-                        arguments, target_tool.parameters
-                    )
-            return await ctx.fastmcp.call_tool(name, arguments)
-
-        tool = Tool.from_function(fn=call_tool, name=transform._call_tool_name)
-        return _fix_call_tool_arguments(tool)
+    kwargs = _build_tool_search_transform_kwargs(config)
 
     if strategy == "regex":
         from fastmcp.server.transforms.search import RegexSearchTransform
@@ -316,7 +351,7 @@ def _apply_tool_search_transform(mcp_instance: Any, config: dict[str, Any]) -> N
         class _FixedRegexSearchTransform(RegexSearchTransform):
             """Regex search with fixed call_tool schema and arg normalization."""
 
-            def _make_call_tool(self) -> Tool:
+            def _make_call_tool(self) -> Any:
                 return _make_normalizing_call_tool(self)
 
         transform = _FixedRegexSearchTransform(**kwargs)
@@ -326,7 +361,7 @@ def _apply_tool_search_transform(mcp_instance: Any, config: dict[str, Any]) -> N
         class _FixedBM25SearchTransform(BM25SearchTransform):
             """BM25 search with fixed call_tool schema and arg normalization."""
 
-            def _make_call_tool(self) -> Tool:
+            def _make_call_tool(self) -> Any:
                 return _make_normalizing_call_tool(self)
 
         transform = _FixedBM25SearchTransform(**kwargs)

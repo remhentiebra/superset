@@ -278,6 +278,45 @@ class TestDatasetMutationTools:
             _restore_modules(saved_modules)
 
     @pytest.mark.anyio
+    async def test_create_dataset_builds_command_payload(self) -> None:
+        mod, saved_modules = _import_tool_module(
+            "superset.mcp_service.dataset.tool.create_dataset"
+        )
+        try:
+            mock_ctx = _make_mock_ctx()
+            dataset = _make_dataset_with_metrics_and_columns()
+            command = MagicMock()
+            command.run.return_value = dataset
+            event_logger = MagicMock()
+            event_logger.log_context.return_value.__enter__ = Mock()
+            event_logger.log_context.return_value.__exit__ = Mock(return_value=False)
+
+            with (
+                patch.object(
+                    mod, "CreateDatasetCommand", return_value=command
+                ) as create_command,
+                patch.object(mod, "event_logger", event_logger),
+            ):
+                result = await mod.create_dataset(
+                    CreateVirtualDatasetRequest(
+                        database_id=3,
+                        table_name="sales_virtual",
+                        sql="SELECT * FROM source_table",
+                        schema="example_schema",
+                        template_params={"country": "DE"},
+                    ),
+                    mock_ctx,
+                )
+
+            assert result.id == 7
+            payload = create_command.call_args.args[0]
+            assert payload["database"] == 3
+            assert payload["schema"] == "example_schema"
+            assert payload["template_params"] == '{"country": "DE"}'
+        finally:
+            _restore_modules(saved_modules)
+
+    @pytest.mark.anyio
     async def test_create_virtual_dataset_returns_structured_invalid_sql_error(
         self,
     ) -> None:

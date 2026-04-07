@@ -222,6 +222,14 @@ class PerformanceMetadata(BaseModel):
     optimization_suggestions: List[str] = Field(
         default_factory=list, description="Performance improvement tips"
     )
+    stage_durations_ms: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Per-stage timing breakdown in milliseconds",
+    )
+    compile_query_duration_ms: int | None = Field(
+        None,
+        description="Compile-check query duration in milliseconds when available",
+    )
 
 
 class AccessibilityMetadata(BaseModel):
@@ -833,18 +841,30 @@ class TimeFilterConfig(BaseModel):
     @field_validator("column")
     @classmethod
     def sanitize_column(cls, v: str) -> str:
-        return sanitize_user_input(v, "Time filter column", max_length=255)  # type: ignore[return-value]
+        return sanitize_user_input(
+            v,
+            "Time filter column",
+            max_length=255,
+        )  # type: ignore[return-value]
 
     @field_validator("time_range")
     @classmethod
     def sanitize_time_range(cls, v: str) -> str:
-        return sanitize_user_input(v, "Time filter range", max_length=255)  # type: ignore[return-value]
+        return sanitize_user_input(
+            v,
+            "Time filter range",
+            max_length=255,
+        )  # type: ignore[return-value]
 
 
 def _metric_target_label(metric: ColumnRef | str) -> str:
     """Normalize a metric filter target into the label used by QueryContext."""
     if isinstance(metric, str):
-        return sanitize_user_input(metric, "Metric filter target", max_length=255)  # type: ignore[return-value]
+        return sanitize_user_input(
+            metric,
+            "Metric filter target",
+            max_length=255,
+        )  # type: ignore[return-value]
     aggregate = (metric.aggregate or "SUM").upper()
     return metric.label or f"{aggregate}({metric.name})"
 

@@ -354,6 +354,41 @@ class TestCompileChart:
         assert result.success is False
         assert "invalid metric" in (result.error or "")
 
+    @patch("superset.commands.chart.data.get_data_command.ChartDataCommand")
+    @patch("superset.common.query_context_factory.QueryContextFactory")
+    def test_compile_chart_preserves_table_query_fields(
+        self,
+        mock_factory_cls,
+        mock_cmd_cls,
+    ):
+        """Table compile checks should keep raw columns, ordering, and time range."""
+        mock_factory_cls.return_value.create.return_value = MagicMock()
+        mock_cmd_cls.return_value.run.return_value = {
+            "queries": [{"data": [{"region": "DE"}]}]
+        }
+
+        form_data = {
+            "viz_type": "table",
+            "query_mode": "raw",
+            "all_columns": ["region"],
+            "columns": ["region"],
+            "order_by_cols": ["region"],
+            "order_desc": False,
+            "row_limit": 25,
+            "time_range": "Last year",
+        }
+
+        result = _compile_chart(form_data, dataset_id=1)
+
+        query_payload = mock_factory_cls.return_value.create.call_args.kwargs[
+            "queries"
+        ][0]
+        assert query_payload["columns"] == ["region"]
+        assert query_payload["orderby"] == [("region", False)]
+        assert query_payload["time_range"] == "Last year"
+        assert result.success is True
+        assert result.query_duration_ms is not None
+
 
 def _make_mock_chart(chart_id: int = 42) -> Mock:
     """Create a mock chart with all attributes needed by serialize_chart_object."""
