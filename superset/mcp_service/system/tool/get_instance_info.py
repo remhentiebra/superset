@@ -23,9 +23,10 @@ InstanceInfoCore for flexible, extensible metrics calculation.
 import logging
 
 from fastmcp import Context
+from sqlalchemy.exc import OperationalError
 from superset_core.mcp.decorators import tool, ToolAnnotations
 
-from superset.extensions import event_logger
+from superset.extensions import db, event_logger
 from superset.mcp_service.mcp_core import InstanceInfoCore
 from superset.mcp_service.system.schemas import (
     GetSupersetInstanceInfoRequest,
@@ -127,9 +128,51 @@ def get_instance_info(
     Returns counts, activity metrics, and database types.
     """
     try:
-        return build_instance_info()
+        return _run_instance_info()
+
+    except OperationalError as e:
+        logger.warning(
+            "Database connection error in get_instance_info, "
+            "resetting session and retrying: %s",
+            e,
+        )
+        try:
+            db.session.rollback()  # pylint: disable=consider-using-transaction
+        except Exception:  # noqa: BLE001
+            # Broad catch: the DB connection itself may be broken (e.g.,
+            # SSL drop), so even rollback can fail with non-SQLAlchemy
+            # errors. This is a cleanup path — swallow and log.
+            logger.warning(
+                "Rollback failed during get_instance_info connection reset",
+                exc_info=True,
+            )
+        try:
+            db.session.remove()  # pylint: disable=consider-using-transaction
+        except Exception:  # noqa: BLE001
+            # Same as above — cleanup must not prevent the retry.
+            logger.warning(
+                "Session remove failed during get_instance_info connection reset",
+                exc_info=True,
+            )
+
+        try:
+            result = _run_instance_info()
+            logger.info("get_instance_info retry succeeded after connection reset")
+            return result
+        except OperationalError as retry_error:
+            logger.error(
+                "get_instance_info retry failed after connection reset: %s",
+                retry_error,
+                exc_info=True,
+            )
+            raise
 
     except Exception as e:
         error_msg = f"Unexpected error in instance info: {str(e)}"
         logger.error(error_msg, exc_info=True)
         raise
+
+
+def _run_instance_info() -> InstanceInfo:
+    """Execute the shared instance info builder for the tool path."""
+    return build_instance_info()
