@@ -32,14 +32,14 @@ from superset.mcp_service.dataset.schemas import (
 from superset.mcp_service.dataset.utils import (
     build_create_dataset_payload,
     run_create_dataset_command,
-    serialize_dataset,
+    serialize_created_dataset,
 )
 
 logger = logging.getLogger(__name__)
 
 
 @tool(
-    tags=["mutate"],
+    tags=["mutate", "dataset"],
     class_permission_name="Dataset",
     method_permission_name="write",
     annotations=ToolAnnotations(
@@ -73,7 +73,17 @@ async def create_virtual_dataset(
         )
         return dataset
 
-    result = serialize_dataset(dataset)
+    result = serialize_created_dataset(
+        dataset,
+        action_label="Create virtual dataset",
+    )
+    if isinstance(result, DatasetError):
+        await ctx.warning(
+            "Virtual dataset response serialization failed: error_type=%s, error=%s"
+            % (result.error_type, result.error)
+        )
+        return result
+
     await ctx.info(
         "Virtual dataset created: dataset_id=%s, table_name=%r"
         % (result.id, result.table_name)

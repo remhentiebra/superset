@@ -31,7 +31,7 @@ from superset.mcp_service.dataset.schemas import DatasetError, DatasetInfo
 from superset.mcp_service.dataset.utils import (
     build_create_dataset_payload,
     run_create_dataset_command,
-    serialize_dataset,
+    serialize_created_dataset,
 )
 from superset.mcp_service.sql_lab.schemas import (
     CreateVirtualDatasetFromSavedQueryRequest,
@@ -118,7 +118,17 @@ async def create_virtual_dataset_from_saved_query(
         )
         return dataset
 
-    result = serialize_dataset(dataset)
+    result = serialize_created_dataset(
+        dataset,
+        action_label="Create virtual dataset from saved query",
+    )
+    if isinstance(result, DatasetError):
+        await ctx.warning(
+            "Saved query promotion response serialization failed: "
+            "error_type=%s, error=%s" % (result.error_type, result.error)
+        )
+        return result
+
     await ctx.info(
         "Virtual dataset created from saved query: dataset_id=%s, table_name=%r"
         % (result.id, result.table_name)

@@ -67,7 +67,7 @@ Database Connections:
 Dataset Management:
 - list_datasets: List datasets with advanced filters (1-based pagination)
 - get_dataset_info: Get detailed dataset information by ID (includes columns/metrics)
-- create_dataset: Create a SQL-backed virtual dataset from typed SQL input
+- create_dataset: Create a physical table-backed dataset or SQL virtual dataset
 - create_virtual_dataset: Create a virtual dataset from typed SQL input
 - update_dataset_metadata: Update dataset metadata and virtual dataset SQL safely
 - update_dataset_metrics: Create, update, or remove dataset metrics with typed payloads
@@ -158,7 +158,7 @@ To explore data with SQL:
 3. execute_sql(database_id, sql) -> run query
 4. save_sql_query(database_id, label, sql) -> save query for later reuse
 5. list_saved_queries or get_saved_query -> rediscover saved work
-6. create_dataset(database_id, table_name, sql) or create_virtual_dataset(...) or
+6. create_dataset(database_id, table_name, sql?) or create_virtual_dataset(...) or
    create_virtual_dataset_from_saved_query ->
    promote reusable SQL into dataset metadata
 7. generate_chart_from_sql(database_id, sql, table_name, config) ->

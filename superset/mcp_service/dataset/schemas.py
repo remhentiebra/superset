@@ -308,33 +308,34 @@ class GetDatasetInfoRequest(MetadataCacheControl):
     ]
 
 
-class CreateVirtualDatasetRequest(BaseModel):
-    """Request schema for creating a virtual dataset from typed SQL input."""
+class CreateDatasetRequest(BaseModel):
+    """Request schema for creating a physical or virtual dataset."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    database_id: int = Field(..., description="Database ID for the virtual dataset")
+    database_id: int = Field(..., description="Database ID for the dataset")
     table_name: str = Field(
         ...,
         min_length=1,
         max_length=250,
         description="Dataset name to create",
     )
-    sql: str = Field(
-        ...,
+    sql: str | None = Field(
+        None,
         min_length=1,
-        description="SQL query used as the virtual dataset definition",
+        description="SQL query used as the virtual dataset definition. Omit for a "
+        "physical table-backed dataset.",
         validation_alias=AliasChoices("sql", "query"),
     )
     schema_name: str | None = Field(
         None,
         alias="schema",
-        description="Database schema for the virtual dataset",
+        description="Database schema for the dataset",
         max_length=250,
     )
     catalog: str | None = Field(
         None,
-        description="Catalog name for the virtual dataset",
+        description="Catalog name for the dataset",
         max_length=250,
     )
     description: str | None = Field(
@@ -357,14 +358,52 @@ class CreateVirtualDatasetRequest(BaseModel):
         default=False,
         description="Whether the main datetime column should always be filtered",
     )
+    is_sqllab_view: bool | None = Field(
+        None,
+        description="Whether the dataset should be marked as a SQL Lab view. "
+        "Defaults to true when sql is provided and false otherwise.",
+    )
+    offset: int | None = Field(
+        None,
+        description="Optional row offset metadata stored on the dataset.",
+    )
 
-    @field_validator("table_name", "sql")
+    @field_validator("table_name")
     @classmethod
     def strip_non_empty_text(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("Value cannot be empty")
         return value
+
+    @field_validator("sql")
+    @classmethod
+    def strip_optional_sql(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be empty")
+        return value
+
+    @model_validator(mode="after")
+    def default_sqllab_view(self) -> "CreateDatasetRequest":
+        if self.is_sqllab_view is None:
+            self.is_sqllab_view = bool(self.sql)
+        elif self.is_sqllab_view and not self.sql:
+            raise ValueError("is_sqllab_view=true requires sql")
+        return self
+
+
+class CreateVirtualDatasetRequest(CreateDatasetRequest):
+    """Request schema for creating a virtual dataset from typed SQL input."""
+
+    sql: str = Field(
+        ...,
+        min_length=1,
+        description="SQL query used as the virtual dataset definition",
+        validation_alias=AliasChoices("sql", "query"),
+    )
 
 
 class DatasetMetricMutation(BaseModel):

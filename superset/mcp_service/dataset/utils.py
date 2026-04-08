@@ -40,7 +40,7 @@ from superset.connectors.sqla.models import SqlaTable
 from superset.daos.dataset import DatasetDAO
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import SupersetErrorException
-from superset.extensions import security_manager
+from superset.extensions import db, security_manager
 from superset.mcp_service.dataset.schemas import (
     DatasetCalculatedColumnMutation,
     DatasetError,
@@ -80,6 +80,28 @@ def get_dataset_by_identifier(identifier: int | str) -> SqlaTable:
 
 def serialize_dataset(dataset: SqlaTable) -> DatasetInfo:
     """Serialize a dataset model into the MCP response schema."""
+    if (dataset_id := getattr(dataset, "id", None)) is not None:
+        try:
+            hydrated_dataset = (
+                db.session.query(SqlaTable)
+                .options(
+                    joinedload(SqlaTable.database),
+                    joinedload(SqlaTable.owners),
+                    joinedload(SqlaTable.columns),
+                    joinedload(SqlaTable.metrics),
+                )
+                .filter(SqlaTable.id == dataset_id)
+                .one_or_none()
+            )
+            if hydrated_dataset is not None:
+                dataset = hydrated_dataset
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to reload dataset %s for response serialization",
+                dataset_id,
+                exc_info=True,
+            )
+
     result = serialize_dataset_object(dataset)
     if result is None:
         raise SupersetErrorException(
@@ -97,6 +119,12 @@ def build_create_dataset_payload(data: dict[str, Any]) -> dict[str, Any]:
     payload = data.copy()
     payload["database"] = payload.pop("database_id")
     payload["schema"] = payload.pop("schema_name", None)
+    if payload.get("sql") is None:
+        payload.pop("sql", None)
+    if payload.get("is_sqllab_view") is None:
+        payload.pop("is_sqllab_view", None)
+    if payload.get("offset") is None:
+        payload.pop("offset", None)
     if (template_params := payload.get("template_params")) is not None:
         payload["template_params"] = json.dumps(template_params)
     return payload
@@ -161,6 +189,19 @@ def run_create_dataset_command(
         return command_factory(payload).run()
     except Exception as ex:  # noqa: BLE001
         logger.exception("%s failed", action_label)
+        return map_create_dataset_exception(ex)
+
+
+def serialize_created_dataset(
+    dataset: SqlaTable,
+    *,
+    action_label: str,
+) -> DatasetInfo | DatasetError:
+    """Serialize a created dataset and map unexpected response failures."""
+    try:
+        return serialize_dataset(dataset)
+    except Exception as ex:  # noqa: BLE001
+        logger.exception("%s response serialization failed", action_label)
         return map_create_dataset_exception(ex)
 
 

@@ -29,7 +29,7 @@ from superset.mcp_service.dataset.schemas import DatasetError
 from superset.mcp_service.dataset.utils import (
     build_create_dataset_payload,
     run_create_dataset_command,
-    serialize_dataset,
+    serialize_created_dataset,
 )
 from superset.mcp_service.explore.tool.generate_explore_link import (
     generate_explore_link,
@@ -97,7 +97,21 @@ async def generate_explore_link_from_sql(
             explore_response=None,
         )
 
-    dataset_info = serialize_dataset(dataset)
+    dataset_info = serialize_created_dataset(
+        dataset,
+        action_label="Generate explore link from SQL",
+    )
+    if isinstance(dataset_info, DatasetError):
+        await ctx.warning(
+            "SQL explore-link promotion response serialization failed: "
+            "error_type=%s, error=%s" % (dataset_info.error_type, dataset_info.error)
+        )
+        return GenerateExploreLinkFromSqlResponse(
+            dataset=None,
+            dataset_error=dataset_info,
+            explore_response=None,
+        )
+
     explore_response = await generate_explore_link(
         GenerateExploreLinkRequest(
             dataset_id=dataset.id,

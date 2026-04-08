@@ -36,7 +36,7 @@ from superset.mcp_service.dataset.schemas import DatasetError
 from superset.mcp_service.dataset.utils import (
     build_create_dataset_payload,
     run_create_dataset_command,
-    serialize_dataset,
+    serialize_created_dataset,
 )
 from superset.mcp_service.sql_lab.schemas import (
     GenerateChartFromSqlRequest,
@@ -103,7 +103,21 @@ async def generate_chart_from_sql(
             chart_response=None,
         )
 
-    dataset_info = serialize_dataset(dataset)
+    dataset_info = serialize_created_dataset(
+        dataset,
+        action_label="Generate chart from SQL",
+    )
+    if isinstance(dataset_info, DatasetError):
+        await ctx.warning(
+            "SQL chart promotion response serialization failed: "
+            "error_type=%s, error=%s" % (dataset_info.error_type, dataset_info.error)
+        )
+        return GenerateChartFromSqlResponse(
+            dataset=None,
+            dataset_error=dataset_info,
+            chart_response=None,
+        )
+
     with record_stage(stage_durations_ms, "chart_generation"):
         chart_response = await generate_chart(
             GenerateChartRequest(

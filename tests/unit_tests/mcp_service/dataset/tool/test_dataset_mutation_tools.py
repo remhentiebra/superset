@@ -31,6 +31,7 @@ from superset.commands.dataset.exceptions import (
     DatasetInvalidError,
 )
 from superset.mcp_service.dataset.schemas import (
+    CreateDatasetRequest,
     CreateVirtualDatasetRequest,
     DatasetCalculatedColumnMutation,
     DatasetError,
@@ -187,6 +188,16 @@ def _make_dataset_with_metrics_and_columns() -> MagicMock:
 
 
 class TestDatasetMutationSchemas:
+    def test_create_dataset_request_supports_physical_datasets(self) -> None:
+        request = CreateDatasetRequest(
+            database_id=1,
+            table_name="  my_dataset  ",
+            schema="  analytics  ",
+        )
+        assert request.table_name == "my_dataset"
+        assert request.sql is None
+        assert request.is_sqllab_view is False
+
     def test_create_virtual_dataset_request_strips_fields(self) -> None:
         request = CreateVirtualDatasetRequest(
             database_id=1,
@@ -298,12 +309,11 @@ class TestDatasetMutationTools:
                 patch.object(mod, "event_logger", event_logger),
             ):
                 result = await mod.create_dataset(
-                    CreateVirtualDatasetRequest(
+                    CreateDatasetRequest(
                         database_id=3,
-                        table_name="sales_virtual",
-                        sql="SELECT * FROM source_table",
+                        table_name="sales_physical",
                         schema="example_schema",
-                        template_params={"country": "DE"},
+                        normalize_columns=True,
                     ),
                     mock_ctx,
                 )
@@ -312,7 +322,51 @@ class TestDatasetMutationTools:
             payload = create_command.call_args.args[0]
             assert payload["database"] == 3
             assert payload["schema"] == "example_schema"
-            assert payload["template_params"] == '{"country": "DE"}'
+            assert payload["normalize_columns"] is True
+            assert payload["is_sqllab_view"] is False
+            assert "sql" not in payload
+        finally:
+            _restore_modules(saved_modules)
+
+    @pytest.mark.anyio
+    async def test_create_dataset_returns_structured_error_on_response_failure(
+        self,
+    ) -> None:
+        mod, saved_modules = _import_tool_module(
+            "superset.mcp_service.dataset.tool.create_dataset"
+        )
+        try:
+            mock_ctx = _make_mock_ctx()
+            dataset = _make_dataset_with_metrics_and_columns()
+            command = MagicMock()
+            command.run.return_value = dataset
+            event_logger = MagicMock()
+            event_logger.log_context.return_value.__enter__ = Mock()
+            event_logger.log_context.return_value.__exit__ = Mock(return_value=False)
+            expected_error = DatasetError.create(
+                "response serialization failed",
+                "InternalError",
+            )
+
+            with (
+                patch.object(mod, "CreateDatasetCommand", return_value=command),
+                patch.object(mod, "event_logger", event_logger),
+                patch.object(
+                    mod,
+                    "serialize_created_dataset",
+                    return_value=expected_error,
+                ),
+            ):
+                result = await mod.create_dataset(
+                    CreateDatasetRequest(
+                        database_id=3,
+                        table_name="sales_physical",
+                        schema="example_schema",
+                    ),
+                    mock_ctx,
+                )
+
+            assert result == expected_error
         finally:
             _restore_modules(saved_modules)
 

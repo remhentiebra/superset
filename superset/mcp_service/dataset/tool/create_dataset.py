@@ -25,21 +25,21 @@ from superset_core.mcp.decorators import tool, ToolAnnotations
 from superset.commands.dataset.create import CreateDatasetCommand
 from superset.extensions import event_logger
 from superset.mcp_service.dataset.schemas import (
-    CreateVirtualDatasetRequest,
+    CreateDatasetRequest,
     DatasetError,
     DatasetInfo,
 )
 from superset.mcp_service.dataset.utils import (
     build_create_dataset_payload,
     run_create_dataset_command,
-    serialize_dataset,
+    serialize_created_dataset,
 )
 
 logger = logging.getLogger(__name__)
 
 
 @tool(
-    tags=["mutate"],
+    tags=["mutate", "dataset"],
     class_permission_name="Dataset",
     method_permission_name="write",
     annotations=ToolAnnotations(
@@ -49,12 +49,12 @@ logger = logging.getLogger(__name__)
     ),
 )
 async def create_dataset(
-    request: CreateVirtualDatasetRequest,
+    request: CreateDatasetRequest,
     ctx: Context,
 ) -> DatasetInfo | DatasetError:
-    """Create a virtual dataset from typed SQL input.
+    """Create a physical table-backed dataset or a virtual SQL dataset.
 
-    Preferred public name for SQL-backed dataset authoring. The legacy
+    Preferred public name for MCP dataset authoring. The legacy
     ``create_virtual_dataset`` tool remains available for compatibility.
     """
     await ctx.info(
@@ -78,7 +78,14 @@ async def create_dataset(
         )
         return dataset
 
-    result = serialize_dataset(dataset)
+    result = serialize_created_dataset(dataset, action_label="Create dataset")
+    if isinstance(result, DatasetError):
+        await ctx.warning(
+            "Dataset response serialization failed: error_type=%s, error=%s"
+            % (result.error_type, result.error)
+        )
+        return result
+
     await ctx.info(
         "Dataset created: dataset_id=%s, table_name=%r" % (result.id, result.table_name)
     )
