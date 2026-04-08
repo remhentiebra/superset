@@ -1467,6 +1467,43 @@ class TestDashboardSerializationEagerLoading:
             # Verify DashboardDAO.find_by_id was called for re-fetch
             mock_find_by_id.assert_called()
 
+    @patch("superset.models.dashboard.Dashboard")
+    @patch("superset.daos.dashboard.DashboardDAO.find_by_id")
+    @patch("superset.db.session")
+    @pytest.mark.asyncio
+    async def test_generate_dashboard_response_includes_persisted_metadata(
+        self, mock_db_session, mock_find_by_id, mock_dashboard_cls, mcp_server
+    ):
+        """generate_dashboard should return persisted layout metadata immediately."""
+        charts = [_mock_chart(id=1, slice_name="Refetched Chart")]
+        refetched_dashboard = _mock_dashboard(id=10)
+        refetched_dashboard.slices = charts
+        refetched_dashboard.json_metadata = '{"native_filter_configuration": []}'
+        refetched_dashboard.position_json = '{"ROOT_ID": {"children": ["GRID_ID"]}}'
+
+        _setup_generate_dashboard_mocks(
+            mock_db_session,
+            mock_find_by_id,
+            mock_dashboard_cls,
+            charts,
+            refetched_dashboard,
+        )
+
+        request = {"chart_ids": [1]}
+
+        async with Client(mcp_server) as client:
+            result = await client.call_tool("generate_dashboard", {"request": request})
+
+        assert result.structured_content["error"] is None
+        assert (
+            result.structured_content["dashboard"]["json_metadata"]
+            == '{"native_filter_configuration": []}'
+        )
+        assert (
+            result.structured_content["dashboard"]["position_json"]
+            == '{"ROOT_ID": {"children": ["GRID_ID"]}}'
+        )
+
     @patch("superset.commands.dashboard.update.UpdateDashboardCommand")
     @patch("superset.daos.dashboard.DashboardDAO.find_by_id")
     @patch("superset.db.session")

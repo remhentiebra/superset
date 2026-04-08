@@ -674,6 +674,30 @@ class TestUpdateChartNameOnly:
         updated_chart.uuid = "abc-123"
         mock_update_cmd_cls.return_value.run.return_value = updated_chart
 
+        refetched_chart = Mock()
+        refetched_chart.id = 1
+        refetched_chart.slice_name = "Renamed Chart"
+        refetched_chart.viz_type = "table"
+        refetched_chart.uuid = "abc-123"
+        refetched_chart.tags = []
+        refetched_chart.owners = []
+        refetched_chart.params = '{"viz_type": "table", "all_columns": ["col1"]}'
+        refetched_chart.datasource_name = "test_dataset"
+        refetched_chart.datasource_type = "table"
+        refetched_chart.description = None
+        refetched_chart.certified_by = None
+        refetched_chart.certification_details = None
+        refetched_chart.cache_timeout = None
+        refetched_chart.changed_by = None
+        refetched_chart.changed_by_name = "admin"
+        refetched_chart.changed_on = None
+        refetched_chart.changed_on_humanized = None
+        refetched_chart.created_by = None
+        refetched_chart.created_by_name = "admin"
+        refetched_chart.created_on = None
+        refetched_chart.created_on_humanized = None
+        mock_find_by_id.side_effect = [mock_chart, refetched_chart]
+
         request = {
             "identifier": 1,
             "chart_name": "Renamed Chart",
@@ -690,6 +714,98 @@ class TestUpdateChartNameOnly:
             mock_update_cmd_cls.assert_called_once_with(
                 1, {"slice_name": "Renamed Chart"}
             )
+
+    @patch(
+        "superset.mcp_service.auth.check_chart_data_access",
+        new_callable=Mock,
+    )
+    @patch(
+        "superset.commands.chart.update.UpdateChartCommand",
+        new_callable=Mock,
+    )
+    @patch("superset.daos.chart.ChartDAO.find_by_id", new_callable=Mock)
+    @patch("superset.db.session")
+    @pytest.mark.asyncio
+    async def test_update_chart_uses_refetched_chart_for_response(
+        self,
+        mock_db_session,
+        mock_find_by_id,
+        mock_update_cmd_cls,
+        mock_check_access,
+        mcp_server,
+    ):
+        """Response should serialize the persisted chart state after update."""
+        lookup_chart = Mock()
+        lookup_chart.id = 1
+        lookup_chart.datasource_id = 10
+        lookup_chart.slice_name = "Old Name"
+        lookup_chart.viz_type = "table"
+        lookup_chart.uuid = "abc-123"
+
+        mock_check_access.return_value = DatasetValidationResult(
+            is_valid=True,
+            dataset_id=10,
+            dataset_name="my_dataset",
+            warnings=[],
+        )
+
+        updated_chart = Mock()
+        updated_chart.id = 1
+        updated_chart.slice_name = "Renamed Chart"
+        updated_chart.viz_type = "table"
+        updated_chart.uuid = "abc-123"
+        mock_update_cmd_cls.return_value.run.return_value = updated_chart
+
+        refetched_chart = Mock()
+        refetched_chart.id = 1
+        refetched_chart.slice_name = "Renamed Chart"
+        refetched_chart.viz_type = "table"
+        refetched_chart.uuid = "abc-123"
+        refetched_chart.tags = []
+        refetched_chart.owners = []
+        refetched_chart.params = '{"viz_type": "table", "all_columns": ["col1"]}'
+        refetched_chart.datasource_name = "analytics.my_dataset"
+        refetched_chart.datasource_type = "table"
+        refetched_chart.description = "Updated description"
+        refetched_chart.certified_by = None
+        refetched_chart.certification_details = None
+        refetched_chart.cache_timeout = None
+        refetched_chart.changed_by = None
+        refetched_chart.changed_by_name = "admin"
+        refetched_chart.changed_on = None
+        refetched_chart.changed_on_humanized = None
+        refetched_chart.created_by = None
+        refetched_chart.created_by_name = "admin"
+        refetched_chart.created_on = None
+        refetched_chart.created_on_humanized = None
+        mock_find_by_id.side_effect = [lookup_chart, refetched_chart]
+
+        request = {
+            "identifier": 1,
+            "chart_name": "Renamed Chart",
+            "generate_preview": False,
+            "config": {
+                "chart_type": "table",
+                "columns": [{"name": "col1"}],
+            },
+        }
+
+        async with Client(mcp) as client:
+            result = await client.call_tool("update_chart", {"request": request})
+
+        assert result.structured_content["success"] is True
+        assert (
+            result.structured_content["chart"]["datasource_name"]
+            == "analytics.my_dataset"
+        )
+        assert result.structured_content["chart"]["form_data"] == {
+            "viz_type": "table",
+            "all_columns": ["col1"],
+        }
+        assert result.structured_content["form_data"] == {
+            "viz_type": "table",
+            "all_columns": ["col1"],
+        }
 
     @patch("superset.daos.chart.ChartDAO.find_by_id", new_callable=Mock)
     @patch("superset.db.session")

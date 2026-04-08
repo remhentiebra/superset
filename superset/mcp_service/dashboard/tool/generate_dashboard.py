@@ -29,7 +29,6 @@ from flask import g
 from superset_core.mcp.decorators import tool, ToolAnnotations
 
 from superset.extensions import event_logger
-from superset.mcp_service.chart.schemas import serialize_chart_object
 from superset.mcp_service.dashboard.constants import (
     generate_id,
     GRID_COLUMN_COUNT,
@@ -39,6 +38,7 @@ from superset.mcp_service.dashboard.schemas import (
     DashboardInfo,
     GenerateDashboardRequest,
     GenerateDashboardResponse,
+    serialize_dashboard_object,
 )
 from superset.mcp_service.utils.url_utils import get_superset_base_url
 from superset.utils import json
@@ -393,44 +393,9 @@ def generate_dashboard(  # noqa: C901
                 error=None,
             )
 
-        # Convert to our response format
-        from superset.mcp_service.dashboard.schemas import (
-            serialize_tag_object,
-            serialize_user_object,
-        )
-
-        dashboard_info = DashboardInfo(
-            id=dashboard.id,
-            dashboard_title=dashboard.dashboard_title,
-            slug=dashboard.slug,
-            description=dashboard.description,
-            published=dashboard.published,
-            created_on=dashboard.created_on,
-            changed_on=dashboard.changed_on,
-            created_by=dashboard.created_by_name or None,
-            changed_by=dashboard.changed_by_name or None,
-            uuid=str(dashboard.uuid) if dashboard.uuid else None,
-            url=f"{get_superset_base_url()}/superset/dashboard/{dashboard.id}/",
-            chart_count=len(request.chart_ids),
-            owners=[
-                serialize_user_object(owner)
-                for owner in getattr(dashboard, "owners", [])
-                if serialize_user_object(owner) is not None
-            ],
-            tags=[
-                serialize_tag_object(tag)
-                for tag in getattr(dashboard, "tags", [])
-                if serialize_tag_object(tag) is not None
-            ],
-            roles=[],  # Dashboard roles not typically set at creation
-            charts=[
-                obj
-                for chart in getattr(dashboard, "slices", [])
-                if (obj := serialize_chart_object(chart)) is not None
-            ],
-        )
-
         dashboard_url = f"{get_superset_base_url()}/superset/dashboard/{dashboard.id}/"
+        dashboard_info = serialize_dashboard_object(dashboard)
+        dashboard_info.url = dashboard_url
 
         logger.info(
             "Created dashboard %s with %s charts", dashboard.id, len(request.chart_ids)

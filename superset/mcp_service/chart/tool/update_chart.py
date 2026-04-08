@@ -24,7 +24,8 @@ import time
 from typing import Any
 
 from fastmcp import Context
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import InvalidRequestError, SQLAlchemyError
+from sqlalchemy.orm import joinedload
 from superset_core.mcp.decorators import tool, ToolAnnotations
 
 from superset.commands.exceptions import CommandException
@@ -43,6 +44,7 @@ from superset.mcp_service.chart.schemas import (
     AccessibilityMetadata,
     GenerateChartResponse,
     parse_chart_config,
+    serialize_chart_object,
     UpdateChartRequest,
 )
 from superset.mcp_service.utils.url_utils import get_superset_base_url
@@ -61,6 +63,48 @@ def _find_chart(identifier: int | str) -> Any | None:
         chart_id = int(identifier) if isinstance(identifier, str) else identifier
         return ChartDAO.find_by_id(chart_id)
     return ChartDAO.find_by_id(identifier, id_column="uuid")
+
+
+def _reload_chart_for_response(chart: Any) -> Any:
+    """Re-fetch a chart with relationships for response serialization."""
+    from superset import db
+    from superset.daos.chart import ChartDAO
+    from superset.models.slice import Slice
+
+    chart_id = getattr(chart, "id", None)
+    if chart_id is None:
+        return chart
+
+    try:
+        try:
+            db.session.expunge(chart)
+        except InvalidRequestError:
+            pass
+        db.session.expire_all()
+        return (
+            ChartDAO.find_by_id(
+                chart_id,
+                query_options=[
+                    joinedload(Slice.owners),
+                    joinedload(Slice.tags),
+                ],
+            )
+            or chart
+        )
+    except SQLAlchemyError:
+        logger.warning(
+            "Re-fetch of chart %s failed; returning command result",
+            chart_id,
+            exc_info=True,
+        )
+        try:
+            db.session.rollback()  # pylint: disable=consider-using-transaction
+        except SQLAlchemyError:
+            logger.warning(
+                "Database rollback failed during chart re-fetch error handling",
+                exc_info=True,
+            )
+        return chart
 
 
 def _build_update_payload(
@@ -230,6 +274,7 @@ async def update_chart(
             with event_logger.log_context(action="mcp.update_chart.db_write"):
                 command = UpdateChartCommand(chart.id, payload_or_error)
                 updated_chart = command.run()
+                updated_chart = _reload_chart_for_response(updated_chart)
 
         # Parse config for analysis (may be None for name-only updates)
         config = parse_chart_config(request.config) if request.config else None
@@ -279,8 +324,11 @@ async def update_chart(
 
         # Return enhanced data
         response_assembly_start = time.perf_counter()
-        result = {
-            "chart": {
+        chart_info = serialize_chart_object(updated_chart)
+        chart_data = (
+            chart_info.model_dump()
+            if chart_info is not None
+            else {
                 "id": updated_chart.id,
                 "slice_name": updated_chart.slice_name,
                 "viz_type": updated_chart.viz_type,
@@ -288,8 +336,12 @@ async def update_chart(
                     f"{get_superset_base_url()}/explore/?slice_id={updated_chart.id}"
                 ),
                 "uuid": str(updated_chart.uuid) if updated_chart.uuid else None,
-                "updated": True,
-            },
+            }
+        )
+        chart_data["updated"] = True
+
+        result = {
+            "chart": chart_data,
             "error": None,
             # Enhanced fields for better LLM integration
             "previews": previews,
@@ -306,6 +358,8 @@ async def update_chart(
                     f"{get_superset_base_url()}/api/v1/chart/{updated_chart.id}/export/"
                 ),
             },
+            "form_data": chart_data.get("form_data") or {},
+            "form_data_key": chart_data.get("form_data_key"),
             "performance": None,
             "accessibility": accessibility.model_dump() if accessibility else None,
             "success": True,
