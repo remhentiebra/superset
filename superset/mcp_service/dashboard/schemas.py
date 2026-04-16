@@ -102,6 +102,7 @@ from superset.mcp_service.utils.sanitization import (
     _remove_dangerous_unicode,
     _strip_html_tags,
 )
+from superset.utils.json import loads as json_loads
 
 
 class DashboardError(BaseModel):
@@ -376,6 +377,40 @@ class DashboardInfo(BaseModel):
 
         # No filtering - return all fields
         return data
+
+
+class NativeFilterSummary(BaseModel):
+    """Lightweight summary of a dashboard native filter."""
+
+    id: str | None = Field(None, description="Native filter ID")
+    name: str | None = Field(None, description="Native filter name")
+    filter_type: str | None = Field(None, description="Native filter type")
+    targets: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Native filter targets",
+    )
+
+
+def serialize_chart_summary(chart: Any) -> ChartInfo | None:
+    """Serialize only the core chart fields needed for dashboard context."""
+    if not chart:
+        return None
+
+    from superset.mcp_service.utils.url_utils import get_superset_base_url
+
+    chart_id = getattr(chart, "id", None)
+    chart_url = None
+    if chart_id is not None:
+        chart_url = f"{get_superset_base_url()}/explore/?slice_id={chart_id}"
+
+    return ChartInfo(
+        id=chart_id,
+        slice_name=getattr(chart, "slice_name", None),
+        viz_type=getattr(chart, "viz_type", None),
+        datasource_name=getattr(chart, "datasource_name", None),
+        url=chart_url,
+        description=getattr(chart, "description", None),
+    )
 
 
 class DashboardList(BaseModel):
@@ -981,6 +1016,53 @@ def _humanize_timestamp(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return humanize.naturaltime(datetime.now() - dt)
+
+
+def _parse_json_metadata(json_metadata_str: str | None) -> Dict[str, Any] | None:
+    """Parse json_metadata into a dict, returning None for invalid input."""
+    if not json_metadata_str:
+        return None
+    try:
+        metadata = json_loads(json_metadata_str)
+    except (TypeError, ValueError):
+        return None
+    return metadata if isinstance(metadata, dict) else None
+
+
+def _extract_native_filters(json_metadata_str: str | None) -> List[NativeFilterSummary]:
+    """Extract lightweight native filter summaries from dashboard metadata."""
+    metadata = _parse_json_metadata(json_metadata_str)
+    if metadata is None:
+        return []
+
+    native_filters = metadata.get("native_filter_configuration", [])
+    if not isinstance(native_filters, list):
+        return []
+
+    summaries: List[NativeFilterSummary] = []
+    for native_filter in native_filters:
+        if not isinstance(native_filter, dict):
+            continue
+        raw_targets = native_filter.get("targets", [])
+        targets = [target for target in raw_targets if isinstance(target, dict)]
+        summaries.append(
+            NativeFilterSummary(
+                id=native_filter.get("id"),
+                name=native_filter.get("name"),
+                filter_type=native_filter.get("filterType"),
+                targets=targets,
+            )
+        )
+    return summaries
+
+
+def _extract_cross_filters_enabled(json_metadata_str: str | None) -> bool | None:
+    """Extract the cross_filters_enabled flag from dashboard metadata."""
+    metadata = _parse_json_metadata(json_metadata_str)
+    if metadata is None:
+        return None
+    value = metadata.get("cross_filters_enabled")
+    return value if isinstance(value, bool) else None
 
 
 def serialize_dashboard_object(dashboard: Any) -> DashboardInfo:
