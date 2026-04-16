@@ -17,9 +17,16 @@
 
 """Tests for MCP response caching middleware."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from superset.mcp_service.caching import _build_caching_settings
+import mcp.types
+import pytest
+from fastmcp.tools.base import ToolResult
+
+from superset.mcp_service.caching import (
+    _build_caching_settings,
+    SupersetResponseCachingMiddleware,
+)
 
 
 def test_build_caching_settings_empty_config():
@@ -104,7 +111,7 @@ def test_create_response_caching_middleware_falls_back_to_memory_when_no_prefix(
     ):
         with patch("flask.has_app_context", return_value=True):
             with patch(
-                "fastmcp.server.middleware.caching.ResponseCachingMiddleware",
+                "superset.mcp_service.caching.SupersetResponseCachingMiddleware",
                 return_value=mock_middleware,
             ) as mock_middleware_class:
                 from superset.mcp_service.caching import (
@@ -139,7 +146,7 @@ def test_create_response_caching_middleware_uses_memory_store_when_store_disable
     ):
         with patch("flask.has_app_context", return_value=True):
             with patch(
-                "fastmcp.server.middleware.caching.ResponseCachingMiddleware",
+                "superset.mcp_service.caching.SupersetResponseCachingMiddleware",
                 return_value=mock_middleware,
             ) as mock_middleware_class:
                 from superset.mcp_service.caching import (
@@ -176,7 +183,7 @@ def test_create_response_caching_middleware_creates_middleware():
                 "superset.mcp_service.caching.get_mcp_store", return_value=mock_store
             ):
                 with patch(
-                    "fastmcp.server.middleware.caching.ResponseCachingMiddleware",
+                    "superset.mcp_service.caching.SupersetResponseCachingMiddleware",
                     return_value=mock_middleware,
                 ) as mock_middleware_class:
                     from superset.mcp_service.caching import (
@@ -191,3 +198,70 @@ def test_create_response_caching_middleware_creates_middleware():
                     call_kwargs = mock_middleware_class.call_args[1]
                     assert call_kwargs["cache_storage"] is mock_store
                     assert call_kwargs["list_tools_settings"] == {"ttl": 300}
+
+
+@pytest.mark.asyncio
+async def test_caching_middleware_skips_force_refresh_nested_call_tool() -> None:
+    """Nested force_refresh requests must bypass the generic tool cache."""
+    middleware = SupersetResponseCachingMiddleware(call_tool_settings={"ttl": 300})
+    middleware._call_tool_cache.get = AsyncMock()
+    middleware._call_tool_cache.put = AsyncMock()
+
+    context = MagicMock()
+    context.message = mcp.types.CallToolRequestParams(
+        name="call_tool",
+        arguments={
+            "name": "get_dashboard_info",
+            "arguments": {"request": {"identifier": 3, "force_refresh": True}},
+        },
+    )
+
+    fresh_result = ToolResult(
+        content=[mcp.types.TextContent(type="text", text="fresh")],
+        structured_content=None,
+        meta=None,
+    )
+    call_next = AsyncMock(return_value=fresh_result)
+
+    result = await middleware.on_call_tool(context, call_next)
+
+    assert result == fresh_result
+    call_next.assert_awaited_once()
+    middleware._call_tool_cache.get.assert_not_awaited()
+    middleware._call_tool_cache.put.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_caching_middleware_skips_excluded_nested_mutation_tool() -> None:
+    """Proxy calls for excluded mutation tools must not be cached."""
+    middleware = SupersetResponseCachingMiddleware(
+        call_tool_settings={
+            "ttl": 300,
+            "excluded_tools": ["upsert_dashboard_native_filters"],
+        }
+    )
+    middleware._call_tool_cache.get = AsyncMock()
+    middleware._call_tool_cache.put = AsyncMock()
+
+    context = MagicMock()
+    context.message = mcp.types.CallToolRequestParams(
+        name="call_tool",
+        arguments={
+            "name": "upsert_dashboard_native_filters",
+            "arguments": {"request": {"identifier": 3, "filters": [{"name": "Org"}]}},
+        },
+    )
+
+    fresh_result = ToolResult(
+        content=[mcp.types.TextContent(type="text", text="mutated")],
+        structured_content=None,
+        meta=None,
+    )
+    call_next = AsyncMock(return_value=fresh_result)
+
+    result = await middleware.on_call_tool(context, call_next)
+
+    assert result == fresh_result
+    call_next.assert_awaited_once()
+    middleware._call_tool_cache.get.assert_not_awaited()
+    middleware._call_tool_cache.put.assert_not_awaited()

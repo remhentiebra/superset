@@ -31,7 +31,7 @@ from superset_core.mcp.decorators import tool, ToolAnnotations
 
 from superset.dashboards.permalink.exceptions import DashboardPermalinkGetFailedError
 from superset.dashboards.permalink.types import DashboardPermalinkValue
-from superset.extensions import event_logger
+from superset.extensions import db, event_logger
 from superset.mcp_service.dashboard.schemas import (
     dashboard_serializer,
     DashboardError,
@@ -107,6 +107,9 @@ async def get_dashboard_info(
         from superset.daos.dashboard import DashboardDAO
         from superset.models.dashboard import Dashboard
         from superset.models.slice import Slice
+
+        if request.force_refresh or not request.use_cache:
+            db.session.expire_all()
 
         # Eager load slices (charts), owners, tags, and roles to avoid N+1
         # queries. Also eager load owners/tags on each slice since the

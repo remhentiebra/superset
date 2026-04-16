@@ -23,8 +23,70 @@ import logging
 from typing import Any, Dict
 
 from superset.mcp_service.storage import get_mcp_store
+from superset.utils import json
+
+try:
+    from fastmcp.server.middleware.caching import ResponseCachingMiddleware
+except ImportError:  # pragma: no cover - guarded by create_response_caching_middleware
+    ResponseCachingMiddleware = object
 
 logger = logging.getLogger(__name__)
+
+
+def _request_disables_cache(value: Any) -> bool:
+    """Return True when request args explicitly ask to bypass cached results."""
+    if isinstance(value, dict):
+        if value.get("force_refresh") is True or value.get("use_cache") is False:
+            return True
+        return any(_request_disables_cache(item) for item in value.values())
+
+    if isinstance(value, list):
+        return any(_request_disables_cache(item) for item in value)
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                return _request_disables_cache(json.loads(stripped))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return False
+
+    return False
+
+
+def _get_proxied_tool_name(arguments: dict[str, Any] | None) -> str | None:
+    """Extract the nested tool name from synthetic ``call_tool`` arguments."""
+    if not isinstance(arguments, dict):
+        return None
+
+    name = arguments.get("name")
+    return name if isinstance(name, str) else None
+
+
+class SupersetResponseCachingMiddleware(ResponseCachingMiddleware):
+    """Superset-specific cache guardrails for tool-call response caching."""
+
+    async def on_call_tool(self, context: Any, call_next: Any) -> Any:
+        tool_name = context.message.name
+        arguments = getattr(context.message, "arguments", None)
+
+        # ``call_tool`` proxies other tools through the search transform.
+        # Respect the nested tool's cache exclusion settings so mutations do not
+        # get cached just because they are wrapped by the proxy tool.
+        if tool_name == "call_tool":
+            proxied_tool_name = _get_proxied_tool_name(arguments)
+            if proxied_tool_name and not self._matches_tool_cache_settings(
+                tool_name=proxied_tool_name
+            ):
+                return await call_next(context=context)
+
+        # ``force_refresh`` and ``use_cache=false`` are part of the public MCP
+        # contract. They must bypass the generic response cache even when the
+        # transport wraps the inner request as a JSON string.
+        if _request_disables_cache(arguments):
+            return await call_next(context=context)
+
+        return await super().on_call_tool(context=context, call_next=call_next)
 
 
 def _build_caching_settings(cache_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -102,9 +164,7 @@ def create_response_caching_middleware() -> Any | None:
             logger.debug("MCP response caching disabled")
             return None
 
-        try:
-            from fastmcp.server.middleware.caching import ResponseCachingMiddleware
-        except ImportError:
+        if ResponseCachingMiddleware is object:
             logger.warning(
                 "ResponseCachingMiddleware not available. Requires FastMCP >= 2.13.0"
             )
@@ -127,7 +187,7 @@ def create_response_caching_middleware() -> Any | None:
         settings = _build_caching_settings(cache_config)
 
         # Create middleware (store=None uses FastMCP's default in-memory store)
-        middleware = ResponseCachingMiddleware(
+        middleware = SupersetResponseCachingMiddleware(
             cache_storage=store,
             **settings,
         )
