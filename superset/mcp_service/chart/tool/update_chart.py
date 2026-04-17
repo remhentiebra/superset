@@ -113,6 +113,20 @@ def _reload_chart_for_response(chart: Any) -> Any:
         return chart
 
 
+def _prefer_command_result_fields(reloaded_chart: Any, command_result: Any) -> Any:
+    """Preserve core identity fields when the post-save reload returns stale data."""
+    if reloaded_chart is None:
+        return command_result
+    for field_name in ("slice_name", "viz_type", "uuid"):
+        command_value = getattr(command_result, field_name, None)
+        if command_value is not None:
+            try:
+                setattr(reloaded_chart, field_name, command_value)
+            except AttributeError:
+                return command_result
+    return reloaded_chart
+
+
 def _validation_error_response(message: str, details: str) -> GenerateChartResponse:
     return GenerateChartResponse.model_validate(
         {
@@ -366,8 +380,11 @@ async def update_chart(  # noqa: C901
             with record_stage(stage_durations_ms, "save"):
                 with event_logger.log_context(action="mcp.update_chart.db_write"):
                     command = UpdateChartCommand(chart.id, payload_or_error)
-                    updated_chart = command.run()
-                    updated_chart = _reload_chart_for_response(updated_chart)
+                    command_result = command.run()
+                    updated_chart = _prefer_command_result_fields(
+                        _reload_chart_for_response(command_result),
+                        command_result,
+                    )
             saved = True
             explore_url = (
                 f"{get_superset_base_url()}/explore/?slice_id={updated_chart.id}"
@@ -451,7 +468,10 @@ async def update_chart(  # noqa: C901
 
         response_assembly_start = time.perf_counter()
         if saved and updated_chart:
-            chart_info = serialize_chart_object(updated_chart)
+            try:
+                chart_info = serialize_chart_object(updated_chart)
+            except TypeError:
+                chart_info = None
             chart_data = (
                 chart_info.model_dump()
                 if chart_info is not None
