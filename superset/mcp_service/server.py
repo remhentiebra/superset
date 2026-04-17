@@ -175,6 +175,65 @@ def _strip_titles(obj: Any, in_properties_map: bool = False) -> Any:
     return obj
 
 
+def _simplify_optional_union(result: dict[str, Any]) -> dict[str, Any]:
+    """Collapse ``anyOf``/``oneOf`` with exactly one non-null variant."""
+    for union_key in ("anyOf", "oneOf"):
+        variants = result.get(union_key)
+        if not isinstance(variants, list) or len(variants) != 2:
+            continue
+        non_null = [v for v in variants if v.get("type") != "null"]
+        if len(non_null) != 1:
+            continue
+        simplified = dict(non_null[0])
+        for keep in ("description", "default"):
+            if keep in result and keep not in simplified:
+                simplified[keep] = result[keep]
+        result.pop(union_key)
+        result.pop("description", None)
+        result.pop("default", None)
+        result.update(simplified)
+    return result
+
+
+def _compact_schema(obj: Any) -> Any:
+    """Collapse ``$defs`` and ``$ref`` pointers in a JSON Schema."""
+    if isinstance(obj, list):
+        return [_compact_schema(item) for item in obj]
+    if not isinstance(obj, dict):
+        return obj
+    if "$ref" in obj:
+        replacement: dict[str, Any] = {"type": "object"}
+        if desc := obj.get("description"):
+            replacement["description"] = desc
+        return replacement
+
+    result: dict[str, Any] = {}
+    for key, value in obj.items():
+        if key == "$defs":
+            continue
+        result[key] = _compact_schema(value)
+    return _simplify_optional_union(result)
+
+
+def _truncate_description(text: str, max_length: int) -> str:
+    """Truncate a tool description for search results."""
+    if not text or len(text) <= max_length:
+        return text
+    truncated = text[:max_length]
+    last_period = truncated.rfind(". ")
+    if last_period > max_length // 2:
+        return truncated[: last_period + 1]
+    return truncated.rstrip() + "..."
+
+
+def _extract_parameter_names(input_schema: dict[str, Any]) -> str:
+    """Extract top-level parameter names from a JSON Schema as a hint string."""
+    properties = input_schema.get("properties", {})
+    if not properties:
+        return ""
+    return ", ".join(properties.keys())
+
+
 def _serialize_tools_without_output_schema(
     tools: Sequence[Any],
 ) -> list[dict[str, Any]]:
@@ -192,6 +251,55 @@ def _serialize_tools_without_output_schema(
             data["inputSchema"] = _strip_titles(input_schema)
         results.append(data)
     return results
+
+
+def _build_summary_serializer(max_desc: int) -> Any:
+    """Build a summary-mode serializer that omits ``inputSchema``."""
+
+    def _summary_serializer(tools: Sequence[Any]) -> list[dict[str, Any]]:
+        results = []
+        for tool in tools:
+            data = tool.to_mcp_tool().model_dump(
+                mode="json", exclude_none=True, exclude={"outputSchema"}
+            )
+            data.pop("outputSchema", None)
+            if input_schema := data.pop("inputSchema", None):
+                hint = _extract_parameter_names(input_schema)
+                if hint:
+                    data["parameters_hint"] = hint
+            if max_desc and (desc := data.get("description")):
+                data["description"] = _truncate_description(desc, max_desc)
+            results.append(data)
+        return results
+
+    return _summary_serializer
+
+
+def _create_search_result_serializer(config: dict[str, Any]) -> Any:
+    """Build a search-result serializer from the tool-search config."""
+    include_schemas = config.get("include_schemas", False)
+
+    if not include_schemas:
+        max_desc = config.get("max_description_length", 300)
+        return _build_summary_serializer(max_desc)
+
+    compact = config.get("compact_schemas", True)
+    max_desc_default = 300 if compact else 0
+    max_desc = config.get("max_description_length", max_desc_default)
+
+    if not compact and not max_desc:
+        return _serialize_tools_without_output_schema
+
+    def _serializer(tools: Sequence[Any]) -> list[dict[str, Any]]:
+        results = _serialize_tools_without_output_schema(tools)
+        for data in results:
+            if compact and (input_schema := data.get("inputSchema")):
+                data["inputSchema"] = _compact_schema(input_schema)
+            if max_desc and (desc := data.get("description")):
+                data["description"] = _truncate_description(desc, max_desc)
+        return results
+
+    return _serializer
 
 
 def _fix_call_tool_arguments(tool: Any) -> Any:
@@ -279,7 +387,7 @@ def _build_tool_search_transform_kwargs(config: dict[str, Any]) -> dict[str, Any
         "always_visible": config.get("always_visible", []),
         "search_tool_name": config.get("search_tool_name", "search_tools"),
         "call_tool_name": config.get("call_tool_name", "call_tool"),
-        "search_result_serializer": _serialize_tools_without_output_schema,
+        "search_result_serializer": _create_search_result_serializer(config),
     }
 
 
