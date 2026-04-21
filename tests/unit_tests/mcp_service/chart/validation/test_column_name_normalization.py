@@ -37,6 +37,12 @@ from superset.mcp_service.chart.validation.dataset_validator import DatasetValid
 from superset.mcp_service.common.error_schemas import DatasetContext
 
 
+def x_axis(config: TableChartConfig | XYChartConfig) -> ColumnRef:
+    assert isinstance(config, XYChartConfig)
+    assert config.x is not None
+    return config.x
+
+
 @pytest.fixture
 def mock_dataset_context() -> DatasetContext:
     """Create a mock dataset context with mixed-case column names."""
@@ -255,7 +261,7 @@ class TestNormalizeColumnNames:
 
         normalized = DatasetValidator.normalize_column_names(config, dataset_id=18)
 
-        assert normalized.x.name == "OrderDate"
+        assert x_axis(normalized).name == "OrderDate"
         assert normalized.y[0].name == "Sales"
         assert normalized.filters is not None
         assert normalized.filters[0].column == "ProductLine"
@@ -297,7 +303,7 @@ class TestNormalizeColumnNames:
         normalized = DatasetValidator.normalize_column_names(config, dataset_id=999)
 
         # Should return original config unchanged
-        assert normalized.x.name == "orderdate"
+        assert x_axis(normalized).name == "orderdate"
         assert normalized.y[0].name == "sales"
 
 
@@ -337,12 +343,12 @@ class TestTimeSeriesFilterPromptFix:
         normalized = DatasetValidator.normalize_column_names(config, dataset_id=18)
 
         # After normalization, x.name should match the filter column exactly
-        assert normalized.x.name == "OrderDate"
+        assert x_axis(normalized).name == "OrderDate"
         assert normalized.filters is not None
         assert normalized.filters[0].column == "OrderDate"
 
         # This equality is what the frontend checks - now they match!
-        assert normalized.x.name == normalized.filters[0].column
+        assert x_axis(normalized).name == normalized.filters[0].column
 
 
 @pytest.fixture
@@ -413,7 +419,7 @@ class TestNormalizeUppercaseDataset:
 
         normalized = DatasetValidator.normalize_column_names(config, dataset_id=24)
 
-        assert normalized.x.name == "ds"
+        assert x_axis(normalized).name == "ds"
         assert normalized.y[0].name == "DISTANCE"
         assert normalized.group_by is not None
         assert normalized.group_by[0].name == "AIRLINE"
@@ -436,7 +442,7 @@ class TestNormalizeUppercaseDataset:
 
         normalized = DatasetValidator.normalize_column_names(config, dataset_id=24)
 
-        assert normalized.x.name == "ds"
+        assert x_axis(normalized).name == "ds"
         assert normalized.y[0].name == "DEPARTURE_DELAY"
 
     @patch.object(DatasetValidator, "_get_dataset_context")
@@ -478,7 +484,7 @@ class TestNormalizeEdgeCases:
 
         normalized = DatasetValidator.normalize_column_names(config, dataset_id=18)
 
-        assert normalized.x.name == "OrderDate"
+        assert x_axis(normalized).name == "OrderDate"
         assert normalized.y[0].name == "Sales"
         assert normalized.filters is None
 
@@ -499,7 +505,7 @@ class TestNormalizeEdgeCases:
 
         normalized = DatasetValidator.normalize_column_names(config, dataset_id=18)
 
-        assert normalized.x.name == "OrderDate"
+        assert x_axis(normalized).name == "OrderDate"
         assert normalized.filters is not None
         assert len(normalized.filters) == 0
 
@@ -519,7 +525,7 @@ class TestNormalizeEdgeCases:
 
         normalized = DatasetValidator.normalize_column_names(config, dataset_id=18)
 
-        assert normalized.x.name == "OrderDate"
+        assert x_axis(normalized).name == "OrderDate"
         assert normalized.group_by is None
 
     @patch.object(DatasetValidator, "_get_dataset_context")
@@ -546,7 +552,7 @@ class TestNormalizeEdgeCases:
 
         normalized = DatasetValidator.normalize_column_names(config, dataset_id=18)
 
-        assert normalized.x.name == "OrderDate"
+        assert x_axis(normalized).name == "OrderDate"
         assert normalized.y[0].name == "Sales"
         assert normalized.y[1].name == "quantity_ordered"
         assert normalized.group_by is not None
@@ -573,7 +579,7 @@ class TestNormalizeEdgeCases:
         first = DatasetValidator.normalize_column_names(config, dataset_id=18)
         second = DatasetValidator.normalize_column_names(first, dataset_id=18)
 
-        assert first.x.name == second.x.name == "OrderDate"
+        assert x_axis(first).name == x_axis(second).name == "OrderDate"
         assert first.y[0].name == second.y[0].name == "Sales"
         assert first.filters is not None
         assert second.filters is not None
@@ -655,7 +661,7 @@ class TestNormalizeXAxisFilterConsistency:
         normalized = DatasetValidator.normalize_column_names(config, dataset_id=18)
 
         assert normalized.filters is not None
-        assert normalized.x.name == normalized.filters[0].column == "OrderDate"
+        assert x_axis(normalized).name == normalized.filters[0].column == "OrderDate"
 
     @patch.object(DatasetValidator, "_get_dataset_context")
     def test_uppercase_dataset_x_filter_match(
@@ -675,7 +681,7 @@ class TestNormalizeXAxisFilterConsistency:
         normalized = DatasetValidator.normalize_column_names(config, dataset_id=24)
 
         assert normalized.filters is not None
-        assert normalized.x.name == normalized.filters[0].column == "ds"
+        assert x_axis(normalized).name == normalized.filters[0].column == "ds"
 
     @patch.object(DatasetValidator, "_get_dataset_context")
     def test_group_by_matches_filter_after_normalization(

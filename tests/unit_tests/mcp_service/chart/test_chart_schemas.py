@@ -35,6 +35,11 @@ from superset.mcp_service.chart.schemas import (
 )
 
 
+def x_axis(config: XYChartConfig) -> ColumnRef:
+    assert config.x is not None
+    return config.x
+
+
 class TestTableChartConfig:
     """Test TableChartConfig validation."""
 
@@ -166,7 +171,7 @@ class TestXYChartConfig:
                 ),  # Label: "COUNT(product_line)"
             ],
         )
-        assert config.x.name == "product_line"
+        assert x_axis(config).name == "product_line"
         assert config.y[0].aggregate == "COUNT"
 
     def test_explicit_duplicate_label_rejected(self) -> None:
@@ -238,7 +243,7 @@ class TestXYChartConfig:
                 ColumnRef(name="sales", aggregate="SUM"),
             ],
         )
-        assert config.x.name == "product_line"
+        assert x_axis(config).name == "product_line"
         assert len(config.y) == 2
 
     def test_time_series_chart_configuration(self) -> None:
@@ -253,7 +258,7 @@ class TestXYChartConfig:
             ],
             kind="line",
         )
-        assert config.x.name == "order_date"
+        assert x_axis(config).name == "order_date"
         assert config.kind == "line"
 
     def test_time_series_with_custom_x_axis_label(self) -> None:
@@ -267,7 +272,7 @@ class TestXYChartConfig:
             ],
             kind="line",
         )
-        assert config.x.label == "Order Date"
+        assert x_axis(config).label == "Order Date"
 
     def test_area_chart_configuration(self) -> None:
         """Test area chart configuration."""
@@ -748,7 +753,8 @@ class TestParseChartConfig:
             {"chart_type": "xy", "x": {"name": "date"}, "y": [{"name": "v"}]}
         )
         assert config.chart_type == "xy"
-        assert config.x.name == "date"
+        assert isinstance(config, XYChartConfig)
+        assert x_axis(config).name == "date"
         assert len(config.y) == 1
         assert config.y[0].name == "v"
 
