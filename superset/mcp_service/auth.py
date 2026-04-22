@@ -582,14 +582,17 @@ def mcp_auth_hook(tool_func: F) -> F:  # noqa: C901
     is_async = inspect.iscoroutinefunction(tool_func)
 
     # Detect if the original function expects a ctx: Context parameter.
-    # If so, we inject it via get_context() at call time so tool functions
-    # don't need @parse_request to handle Context injection.
+    # If so, we inject it via get_context() at call time.
     from fastmcp import Context as FMContext
 
     _tool_sig = inspect.signature(tool_func)
     _needs_ctx = any(
         p.annotation is FMContext or _is_context_param_annotation(p.annotation, p_name)
         for p_name, p in _tool_sig.parameters.items()
+    )
+    has_var_positional = any(
+        p.kind == inspect.Parameter.VAR_POSITIONAL
+        for p in _tool_sig.parameters.values()
     )
 
     def _inject_ctx(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -707,14 +710,6 @@ def mcp_auth_hook(tool_func: F) -> F:  # noqa: C901
     new_wrapper.__annotations__ = wrapper.__annotations__
     # Copy docstring from original function (not wrapper, which may have lost it)
     new_wrapper.__doc__ = tool_func.__doc__
-
-    # Set __signature__ from the original function, but:
-    # 1. Remove ctx parameter - FastMCP tools don't expose it to clients
-    # 2. Skip if original has *args (parse_request output has its own handling)
-    has_var_positional = any(
-        p.kind == inspect.Parameter.VAR_POSITIONAL
-        for p in _tool_sig.parameters.values()
-    )
 
     if not has_var_positional:
         # For functions without *args, preserve signature but remove ctx

@@ -36,13 +36,17 @@ import {
 type FilterFormInput =
   | NativeFiltersFormItem
   | NativeFilterDivider
-  | Filter
+  | FilterWithTimeGrains
   | Divider
   | ChartCustomizationsFormItem
   | ChartCustomization
   | ChartCustomizationDivider;
 
-type NativeFilterFormOrSaved = NativeFiltersFormItem | Filter;
+type FilterWithTimeGrains = Filter & {
+  time_grains?: string[];
+};
+
+type NativeFilterFormOrSaved = NativeFiltersFormItem | FilterWithTimeGrains;
 
 function isCustomizationType(
   formInputs: FilterFormInput,
@@ -107,7 +111,7 @@ function buildFilterTarget(
 function transformFormInput(
   id: string,
   formInputs: NativeFiltersFormItem,
-): Filter {
+): FilterWithTimeGrains {
   const defaultScope = {
     rootPath: [DASHBOARD_ROOT_ID],
     excluded: [],
@@ -127,6 +131,9 @@ function transformFormInput(
     adhoc_filters: formInputs.adhoc_filters,
     time_range: formInputs.time_range,
     granularity_sqla: formInputs.granularity_sqla,
+    time_grains: formInputs.time_grains?.length
+      ? formInputs.time_grains
+      : undefined,
     sortMetric: formInputs.sortMetric ?? null,
     requiredFirst: formInputs.requiredFirst
       ? Object.values(formInputs.requiredFirst).find(rf => rf)
@@ -134,7 +141,10 @@ function transformFormInput(
   };
 }
 
-function transformSavedFilter(id: string, filter: Filter): Filter {
+function transformSavedFilter(
+  id: string,
+  filter: FilterWithTimeGrains,
+): FilterWithTimeGrains {
   return {
     ...filter,
     id,
@@ -145,7 +155,7 @@ function transformSavedFilter(id: string, filter: Filter): Filter {
 function transformFilter(
   id: string,
   formInputs: NativeFilterFormOrSaved,
-): Filter {
+): FilterWithTimeGrains {
   if (isFormInput(formInputs)) {
     return transformFormInput(id, formInputs);
   }
@@ -155,7 +165,7 @@ function transformFilter(
 export function transformFilterForSave(
   id: string,
   formInputs: FilterFormInput | undefined,
-): Filter | Divider | undefined {
+): FilterWithTimeGrains | Divider | undefined {
   if (!formInputs) {
     return undefined;
   }
