@@ -28,6 +28,7 @@ from superset_core.mcp.decorators import tool, ToolAnnotations
 
 from superset.extensions import db, event_logger
 from superset.mcp_service.mcp_core import InstanceInfoCore
+from superset.mcp_service.privacy import user_can_view_data_model_metadata
 from superset.mcp_service.system.schemas import (
     GetSupersetInstanceInfoRequest,
     InstanceInfo,
@@ -105,10 +106,25 @@ def build_instance_info(action: str = "mcp.get_instance_info.metrics") -> Instan
     with event_logger.log_context(action=action):
         result = instance_info_core.run_tool()
 
+    if not user_can_view_data_model_metadata():
+        result = _redact_data_model_metadata(result)
+
     if (user := getattr(g, "user", None)) is not None:
         result.current_user = serialize_user_object(user)
 
     return result
+
+
+def _redact_data_model_metadata(result: InstanceInfo) -> InstanceInfo:
+    """Remove dataset/database counts and activity from instance overview."""
+    data = result.model_copy(deep=True)
+    data.instance_summary.total_datasets = 0
+    data.instance_summary.total_databases = 0
+    data.recent_activity.datasets_created_last_30_days = 0
+    data.recent_activity.datasets_modified_last_7_days = 0
+    data.database_breakdown.by_type = {}
+    data.data_model_metadata_redacted = True
+    return data
 
 
 @tool(

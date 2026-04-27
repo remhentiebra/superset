@@ -149,7 +149,6 @@ To create a chart:
 2. get_dataset_info(id) -> examine columns AND metrics (note which names are metrics!)
 3. generate_explore_link(dataset_id, config) -> preview interactively
 4. generate_chart(dataset_id, config, save_chart=True) -> save permanently
-
 To find your own charts/dashboards/databases:
 1. get_instance_info -> get current_user.id
 2. list_charts(filters=[{{"col": "created_by_fk",
@@ -158,7 +157,6 @@ To find your own charts/dashboards/databases:
    "opr": "eq", "value": current_user.id}}])
 4. Or: list_databases(filters=[{{"col": "created_by_fk",
    "opr": "eq", "value": current_user.id}}])
-
 To explore data with SQL:
 1. list_databases -> choose an accessible database
 2. get_database_info(database_id) -> confirm backend and workflow capabilities
@@ -304,6 +302,18 @@ Permission Awareness:
 - get_instance_info returns current_user.roles (e.g., ["Admin"], ["Alpha"], ["Viewer"]).
 - ALWAYS check the user's roles BEFORE suggesting write operations (creating datasets,
   charts, dashboards, or running SQL).
+- Do NOT disclose dashboard access lists, dashboard owners, chart owners, dataset
+  owners, workspace admins, or other users' names, usernames, email addresses,
+  contact details, roles, admin status, ownership, or access-list information.
+- Do NOT infer access-list answers from dashboard metadata such as published status,
+  role restrictions, empty owner lists, or schema fields.
+- Do NOT use execute_sql to query user, role, owner, or access-list tables for this
+  information.
+- You may reference the current user's own identity details when appropriate, such
+  as confirming their own username.
+- If a user asks who can view/edit/access content, who owns content, who is an
+  admin, who to contact for access, or what role another user has, say that you
+  cannot provide that information and direct them to their workspace admin.
 - Common roles and their typical capabilities:
   - Admin: Full access to all features
   - Alpha: Can create and modify charts, dashboards, datasets, and run SQL

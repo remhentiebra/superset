@@ -205,6 +205,11 @@ def generate_dashboard(  # noqa: C901
     from pydantic import ValidationError
     from sqlalchemy.exc import SQLAlchemyError
 
+    # Advisory messages (e.g. title sanitization) surfaced to the caller
+    # alongside the created dashboard so they can tell when their input
+    # was altered.
+    sanitization_warnings = list(getattr(request, "sanitization_warnings", []) or [])
+
     try:
         # Get chart objects from IDs (required for SQLAlchemy relationships)
         from superset import db
@@ -351,7 +356,7 @@ def generate_dashboard(  # noqa: C901
         # environments, causing "Can't reconnect until invalid transaction
         # is rolled back".  Wrap the DAO re-fetch in try/except; on failure,
         # return a minimal response using only scalar attributes that are
-        # already loaded — relationship fields (owners, tags, slices) would
+        # already loaded — relationship fields (tags, slices) would
         # trigger lazy-loading on the same dead session.
         from superset.daos.dashboard import DashboardDAO
 
@@ -360,9 +365,7 @@ def generate_dashboard(  # noqa: C901
                 DashboardDAO.find_by_id(
                     dashboard.id,
                     query_options=[
-                        subqueryload(Dashboard.slices).subqueryload(Slice.owners),
                         subqueryload(Dashboard.slices).subqueryload(Slice.tags),
-                        subqueryload(Dashboard.owners),
                         subqueryload(Dashboard.tags),
                     ],
                 )
@@ -394,6 +397,7 @@ def generate_dashboard(  # noqa: C901
                 ),
                 dashboard_url=dashboard_url,
                 error=None,
+                warnings=sanitization_warnings,
             )
 
         dashboard_url = f"{get_superset_base_url()}/superset/dashboard/{dashboard.id}/"
@@ -405,7 +409,10 @@ def generate_dashboard(  # noqa: C901
         )
 
         return GenerateDashboardResponse(
-            dashboard=dashboard_info, dashboard_url=dashboard_url, error=None
+            dashboard=dashboard_info,
+            dashboard_url=dashboard_url,
+            error=None,
+            warnings=sanitization_warnings,
         )
 
     except (SQLAlchemyError, ValueError, AttributeError, ValidationError) as e:
