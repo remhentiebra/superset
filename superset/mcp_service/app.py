@@ -76,7 +76,7 @@ Dataset Management:
 Chart Management:
 - list_charts: List charts with advanced filters (1-based pagination)
 - get_chart_info: Get detailed chart information by ID
-- get_chart_preview: Get a visual preview of a chart with image URL
+- get_chart_preview: Get a visual preview of a chart as formatted content or URL
 - get_chart_data: Get underlying chart data in text-friendly format
 - get_chart_sql: Get the rendered SQL query for a chart (without executing it)
 - generate_chart: Create and save a new chart permanently
@@ -145,18 +145,37 @@ To add a chart to an existing dashboard:
      after they confirm. Never silently create a new dashboard without asking first.
 
 To create a chart:
-1. list_datasets -> find a dataset
-2. get_dataset_info(id) -> examine columns AND metrics (note which names are metrics!)
-3. generate_explore_link(dataset_id, config) -> preview interactively
-4. generate_chart(dataset_id, config, save_chart=True) -> save permanently
-To find your own charts/dashboards/databases:
-1. get_instance_info -> get current_user.id
-2. list_charts(filters=[{{"col": "created_by_fk",
-   "opr": "eq", "value": current_user.id}}])
-3. Or: list_dashboards(filters=[{{"col": "created_by_fk",
-   "opr": "eq", "value": current_user.id}}])
-4. Or: list_databases(filters=[{{"col": "created_by_fk",
-   "opr": "eq", "value": current_user.id}}])
+1. list_datasets(request={{}}) -> find a dataset
+2. get_dataset_info(request={{"identifier": <id>}})
+   -> examine columns AND metrics
+3. generate_explore_link(request={{
+     "dataset_id": <id>,
+     "config": {{"chart_type": "xy", ...}}
+   }}) -> preview interactively
+4. generate_chart(request={{
+     "dataset_id": <id>,
+     "config": {{...}}, "save_chart": true
+   }}) -> save permanently
+
+To find your own charts/dashboards/datasets/databases:
+- list_charts(request={{"created_by_me": true}})      — items you created
+- list_dashboards(request={{"created_by_me": true}})  — items you created
+- list_datasets(request={{"created_by_me": true}})    — items you created
+- list_databases(request={{"created_by_me": true}})   — items you created
+
+To find items where you are listed as an owner (edit access):
+- list_charts(request={{"owned_by_me": true}})
+- list_dashboards(request={{"owned_by_me": true}})
+- list_datasets(request={{"owned_by_me": true}})
+
+To find all items you have any connection to (created OR own):
+- list_charts(request={{"created_by_me": true, "owned_by_me": true}})
+- list_dashboards(request={{"created_by_me": true, "owned_by_me": true}})
+- list_datasets(request={{"created_by_me": true, "owned_by_me": true}})
+
+Use created_by_me for authorship, owned_by_me for edit ownership, or both
+together for the union. All flags can be combined with 'filters' but not
+with 'search'.
 To explore data with SQL:
 1. list_databases -> choose an accessible database
 2. get_database_info(database_id) -> confirm backend and workflow capabilities
@@ -222,19 +241,20 @@ Query Examples:
 - List all tables:
   filters=[{{"col": "viz_type", "opr": "in", "value": ["table", "pivot_table_v2"]}}]
 - List time series charts:
-  filters=[{{"col": "viz_type", "opr": "sw", "value": "echarts_timeseries"}}]
-- Search by name: search="sales"
-- My charts (use current_user.id from get_instance_info):
-  filters=[{{"col": "created_by_fk", "opr": "eq", "value": <user_id>}}]
-- My dashboards:
-  filters=[{{"col": "created_by_fk", "opr": "eq", "value": <user_id>}}]
-- My databases:
-  filters=[{{"col": "created_by_fk", "opr": "eq", "value": <user_id>}}]
-
-To modify an existing chart (add filters, change metrics, change dimensions, etc.):
-1. get_chart_info(chart_id) -> examine current configuration
-2. update_chart(chart_id, config) -> apply changes (filters, metrics, dimensions)
-Do NOT use execute_sql for chart modifications. Use update_chart instead.
+  list_charts(request={{"filters": [{{"col": "viz_type",
+    "opr": "sw", "value": "echarts_timeseries"}}]}})
+- Search by name: list_charts(request={{"search": "sales"}})
+- My charts: list_charts(request={{"created_by_me": true}})
+- My dashboards: list_dashboards(request={{"created_by_me": true}})
+- My databases: list_databases(request={{"created_by_me": true}})
+To modify an existing chart (add filters, change metrics, etc.):
+1. get_chart_info(request={{"identifier": <chart_id>}})
+   -> examine current configuration
+2. update_chart(request={{
+     "identifier": <chart_id>, "config": {{...}}
+   }}) -> apply changes
+Do NOT use execute_sql for chart modifications.
+Use update_chart instead.
 
 Filter types for chart configs:
 - value_filter: equality, pattern matching, and set membership
@@ -288,7 +308,7 @@ General usage tips:
 - Use 'filters' parameter for advanced queries with filter columns from get_schema
 - IDs can be integer or UUID format where supported
 - All tools return structured, Pydantic-typed responses
-- Chart previews are served as PNG images via custom screenshot endpoints
+- Chart previews can return ASCII text, Explore URLs, table data, or Vega-Lite specs
 
 Input format:
 - Tool request parameters accept structured objects (dicts/JSON)

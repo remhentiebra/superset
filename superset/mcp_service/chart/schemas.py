@@ -36,7 +36,6 @@ from pydantic import (
     model_serializer,
     model_validator,
     PositiveInt,
-    TypeAdapter,
     ValidationError,
 )
 
@@ -44,8 +43,10 @@ from superset.constants import TimeGrain
 from superset.daos.base import ColumnOperator, ColumnOperatorEnum
 from superset.mcp_service.common.cache_schemas import (
     CacheStatus,
+    CreatedByMeMixin,
     FormDataCacheControl,
     MetadataCacheControl,
+    OwnedByMeMixin,
     QueryCacheControl,
 )
 from superset.mcp_service.common.error_schemas import ChartGenerationError
@@ -54,6 +55,10 @@ from superset.mcp_service.privacy import filter_user_directory_fields
 from superset.mcp_service.system.schemas import (
     PaginationInfo,
     TagInfo,
+)
+from superset.mcp_service.utils import (
+    escape_llm_context_delimiters,
+    sanitize_for_llm_context,
 )
 from superset.mcp_service.utils.sanitization import (
     sanitize_filter_value,
@@ -185,6 +190,12 @@ class ChartError(BaseModel):
         description="Error timestamp",
     )
     model_config = ConfigDict(ser_json_timedelta="iso8601")
+
+    @field_validator("error")
+    @classmethod
+    def sanitize_error_for_llm_context(cls, value: str) -> str:
+        """Wrap error text before it is exposed to LLM context."""
+        return sanitize_for_llm_context(value, field_path=("error",))
 
 
 class ChartCapabilities(BaseModel):
@@ -382,6 +393,83 @@ def extract_filters_from_form_data(
     )
 
 
+CHART_FORM_DATA_EXCLUDED_FIELD_NAMES = frozenset(
+    {
+        "all_columns",
+        "columns",
+        "datasource",
+        "datasource_id",
+        "datasource_name",
+        "datasource_type",
+        "entity",
+        "form_data_key",
+        "groupby",
+        "metric",
+        "metrics",
+        "series",
+        "slice_id",
+        "viz_type",
+        "x",
+        "y",
+        "size",
+    }
+)
+
+
+def sanitize_chart_info_for_llm_context(chart_info: ChartInfo) -> ChartInfo:
+    """Wrap chart read-path descriptive fields before LLM exposure."""
+    payload = chart_info.model_dump(mode="python")
+
+    for field_name in (
+        "slice_name",
+        "description",
+        "certified_by",
+        "certification_details",
+    ):
+        payload[field_name] = sanitize_for_llm_context(
+            payload.get(field_name),
+            field_path=(field_name,),
+        )
+
+    payload["datasource_name"] = escape_llm_context_delimiters(
+        payload.get("datasource_name")
+    )
+
+    if payload.get("filters") is not None:
+        payload["filters"] = sanitize_for_llm_context(
+            payload["filters"],
+            field_path=("filters",),
+            excluded_field_names=frozenset(),
+        )
+
+    if payload.get("form_data") is not None:
+        payload["form_data"] = sanitize_for_llm_context(
+            payload["form_data"],
+            field_path=("form_data",),
+            excluded_field_names=(
+                CHART_FORM_DATA_EXCLUDED_FIELD_NAMES
+                | frozenset({"cache_key", "database", "database_name", "schema"})
+            ),
+        )
+
+    payload["tags"] = [
+        {
+            **tag,
+            "name": sanitize_for_llm_context(
+                tag.get("name"),
+                field_path=("tags", str(index), "name"),
+            ),
+            "description": sanitize_for_llm_context(
+                tag.get("description"),
+                field_path=("tags", str(index), "description"),
+            ),
+        }
+        for index, tag in enumerate(payload.get("tags", []))
+    ]
+
+    return ChartInfo.model_validate(payload)
+
+
 def serialize_chart_object(chart: ChartLike | None) -> ChartInfo | None:
     if not chart:
         return None
@@ -408,34 +496,38 @@ def serialize_chart_object(chart: ChartLike | None) -> ChartInfo | None:
     # Extract structured filter information
     filters_info = extract_filters_from_form_data(chart_form_data)
 
-    return ChartInfo(
-        id=chart_id,
-        slice_name=getattr(chart, "slice_name", None),
-        viz_type=getattr(chart, "viz_type", None),
-        datasource_name=getattr(chart, "datasource_name", None),
-        datasource_type=getattr(chart, "datasource_type", None),
-        url=chart_url,
-        description=getattr(chart, "description", None),
-        certified_by=getattr(chart, "certified_by", None),
-        certification_details=getattr(chart, "certification_details", None),
-        cache_timeout=getattr(chart, "cache_timeout", None),
-        form_data=chart_form_data,
-        filters=filters_info,
-        changed_on=getattr(chart, "changed_on", None),
-        changed_on_humanized=getattr(chart, "changed_on_humanized", None)
-        or _humanize_timestamp(getattr(chart, "changed_on", None)),
-        created_by=getattr(chart, "created_by_name", None)
-        or (str(chart.created_by) if getattr(chart, "created_by", None) else None),
-        created_on=getattr(chart, "created_on", None),
-        created_on_humanized=getattr(chart, "created_on_humanized", None)
-        or _humanize_timestamp(getattr(chart, "created_on", None)),
-        uuid=str(getattr(chart, "uuid", "")) if getattr(chart, "uuid", None) else None,
-        tags=[
-            TagInfo.model_validate(tag, from_attributes=True)
-            for tag in getattr(chart, "tags", [])
-        ]
-        if getattr(chart, "tags", None)
-        else [],
+    return sanitize_chart_info_for_llm_context(
+        ChartInfo(
+            id=chart_id,
+            slice_name=getattr(chart, "slice_name", None),
+            viz_type=getattr(chart, "viz_type", None),
+            datasource_name=getattr(chart, "datasource_name", None),
+            datasource_type=getattr(chart, "datasource_type", None),
+            url=chart_url,
+            description=getattr(chart, "description", None),
+            certified_by=getattr(chart, "certified_by", None),
+            certification_details=getattr(chart, "certification_details", None),
+            cache_timeout=getattr(chart, "cache_timeout", None),
+            form_data=chart_form_data,
+            filters=filters_info,
+            changed_on=getattr(chart, "changed_on", None),
+            changed_on_humanized=getattr(chart, "changed_on_humanized", None)
+            or _humanize_timestamp(getattr(chart, "changed_on", None)),
+            created_by=getattr(chart, "created_by_name", None)
+            or (str(chart.created_by) if getattr(chart, "created_by", None) else None),
+            created_on=getattr(chart, "created_on", None),
+            created_on_humanized=getattr(chart, "created_on_humanized", None)
+            or _humanize_timestamp(getattr(chart, "created_on", None)),
+            uuid=str(getattr(chart, "uuid", ""))
+            if getattr(chart, "uuid", None)
+            else None,
+            tags=[
+                TagInfo.model_validate(tag, from_attributes=True)
+                for tag in getattr(chart, "tags", [])
+            ]
+            if getattr(chart, "tags", None)
+            else [],
+        )
     )
 
 
@@ -1912,68 +2004,12 @@ ChartConfig = Annotated[
     ),
 ]
 
-# Module-level TypeAdapter avoids repeated schema compilation in
-# parse_chart_config() — safe because ChartConfig is fully defined above.
-_CHART_CONFIG_ADAPTER: TypeAdapter[ChartConfig] = TypeAdapter(ChartConfig)
 
 # Compact description for JSON Schema — keeps tool inputSchema small while
 # giving LLMs enough context to construct valid configs.
-_CHART_CONFIG_DESCRIPTION = (
-    "Chart configuration object. MUST include 'chart_type' to select the "
-    "schema. Types: 'xy' (x, y, kind: line/bar/area/scatter), "
-    "'table' (columns), 'pie' (dimension, metric), "
-    "'pivot_table' (rows, metrics), 'mixed_timeseries' (x, y, y_secondary), "
-    "'handlebars' (columns, handlebars_template), "
-    "'big_number' (metric). "
-    "See chart://configs resource for full field reference and examples."
-)
 
 
-def parse_chart_config(
-    config: Dict[str, Any],
-) -> (
-    XYChartConfig
-    | TableChartConfig
-    | PieChartConfig
-    | PivotTableChartConfig
-    | MixedTimeseriesChartConfig
-    | HandlebarsChartConfig
-    | BigNumberChartConfig
-):
-    """Parse a raw dict into the appropriate typed ChartConfig subclass.
-
-    Validates the dict against the discriminated union using chart_type.
-    Call this in tool function bodies to get a typed config object.
-    """
-    try:
-        return _CHART_CONFIG_ADAPTER.validate_python(config)
-    except Exception as e:
-        raise ValueError(
-            f"{e}\n\n"
-            f"Hint: read the chart://configs resource for valid configuration "
-            f"examples and field reference."
-        ) from e
-
-
-def _coerce_config_to_dict(v: Any) -> Dict[str, Any]:
-    """Accept ChartConfig objects, dicts, or JSON strings for the config field."""
-    if isinstance(v, str):
-        from superset.utils import json as json_utils
-
-        try:
-            v = json_utils.loads(v)
-        except (ValueError, TypeError) as exc:
-            raise ValueError(
-                f"config must be a JSON object string, got: {v!r}"
-            ) from exc
-    if hasattr(v, "model_dump"):
-        return v.model_dump()
-    if isinstance(v, dict):
-        return v
-    raise TypeError(f"config must be a dict or JSON string, got {type(v).__name__}")
-
-
-class ListChartsRequest(MetadataCacheControl):
+class ListChartsRequest(OwnedByMeMixin, CreatedByMeMixin, MetadataCacheControl):
     """Request schema for list_charts with clear, unambiguous types."""
 
     filters: Annotated[
@@ -2053,8 +2089,7 @@ class ListChartsRequest(MetadataCacheControl):
 
     @model_validator(mode="after")
     def validate_search_and_filters(self) -> "ListChartsRequest":
-        """Prevent using both search and filters simultaneously to avoid query
-        conflicts."""
+        """Prevent using both search and filters simultaneously."""
         if self.search and self.filters:
             raise ValueError(
                 "Cannot use both 'search' and 'filters' parameters simultaneously. "
@@ -2069,7 +2104,7 @@ class GenerateChartRequest(QueryCacheControl):
     model_config = ConfigDict(populate_by_name=True)
 
     dataset_id: int | str = Field(..., description="Dataset identifier (ID, UUID)")
-    config: Dict[str, Any] = Field(..., description=_CHART_CONFIG_DESCRIPTION)
+    config: ChartConfig = Field(..., description="Chart configuration")
     chart_name: str | None = Field(
         None,
         description="Auto-generates if omitted",
@@ -2090,11 +2125,6 @@ class GenerateChartRequest(QueryCacheControl):
             "notice to the caller instead of silently dropping content."
         ),
     )
-
-    @field_validator("config", mode="before")
-    @classmethod
-    def coerce_config(cls, v: Any) -> Dict[str, Any]:
-        return _coerce_config_to_dict(v)
 
     @model_validator(mode="before")
     @classmethod
@@ -2172,23 +2202,16 @@ class GenerateChartRequest(QueryCacheControl):
 
 class GenerateExploreLinkRequest(FormDataCacheControl):
     dataset_id: int | str = Field(..., description="Dataset identifier (ID, UUID)")
-    config: Dict[str, Any] = Field(..., description=_CHART_CONFIG_DESCRIPTION)
-
-    @field_validator("config", mode="before")
-    @classmethod
-    def coerce_config(cls, v: Any) -> Dict[str, Any]:
-        return _coerce_config_to_dict(v)
+    config: ChartConfig = Field(..., description="Chart configuration")
 
 
 class UpdateChartRequest(QueryCacheControl):
     model_config = ConfigDict(populate_by_name=True)
 
     identifier: int | str = Field(..., description="Chart ID or UUID")
-    config: Dict[str, Any] | None = Field(
+    config: ChartConfig | None = Field(
         None,
-        description=(
-            f"{_CHART_CONFIG_DESCRIPTION} Optional; omit to only update chart_name."
-        ),
+        description="Chart configuration. Optional; omit to only update chart_name.",
     )
     chart_name: str | None = Field(
         None,
@@ -2213,13 +2236,6 @@ class UpdateChartRequest(QueryCacheControl):
         ),
     )
 
-    @field_validator("config", mode="before")
-    @classmethod
-    def coerce_config(cls, v: Any) -> Dict[str, Any] | None:
-        if v is None:
-            return None
-        return _coerce_config_to_dict(v)
-
     @field_validator("chart_name")
     @classmethod
     def sanitize_chart_name(cls, v: str | None) -> str | None:
@@ -2230,16 +2246,11 @@ class UpdateChartRequest(QueryCacheControl):
 class UpdateChartPreviewRequest(FormDataCacheControl):
     form_data_key: str = Field(..., description="Existing form_data_key to update")
     dataset_id: int | str = Field(..., description="Dataset ID or UUID")
-    config: Dict[str, Any] = Field(..., description=_CHART_CONFIG_DESCRIPTION)
+    config: ChartConfig = Field(..., description="Chart configuration")
     generate_preview: bool = True
     preview_formats: List[Literal["url", "ascii", "vega_lite", "table"]] = Field(
         default_factory=lambda: ["url"],
     )
-
-    @field_validator("config", mode="before")
-    @classmethod
-    def coerce_config(cls, v: Any) -> Dict[str, Any]:
-        return _coerce_config_to_dict(v)
 
 
 class GetChartDataRequest(QueryCacheControl):
@@ -2401,21 +2412,21 @@ class GetChartPreviewRequest(QueryCacheControl):
         return self
 
     format: Literal["url", "ascii", "table", "vega_lite"] = Field(
-        default="url",
+        default="ascii",
         description=(
-            "Preview format: 'url' for explore link (default), "
-            "'ascii' for text art, "
+            "Preview format: 'ascii' for text art (default), "
+            "'url' for explore link, "
             "'table' for data table, "
             "'vega_lite' for interactive JSON specification"
         ),
     )
     width: int | None = Field(
         default=800,
-        description="Preview image width in pixels (for url/base64 formats)",
+        description="Preview width in pixels (for url and vega_lite formats)",
     )
     height: int | None = Field(
         default=600,
-        description="Preview image height in pixels (for url/base64 formats)",
+        description="Preview height in pixels (for url and vega_lite formats)",
     )
     ascii_width: int | None = Field(
         default=80, description="ASCII chart width in characters (for ascii format)"
@@ -2427,14 +2438,14 @@ class GetChartPreviewRequest(QueryCacheControl):
 
 # Discriminated union preview formats for type safety
 class URLPreview(BaseModel):
-    """URL-based image preview format."""
+    """URL-based preview format."""
 
     type: Literal["url"] = "url"
-    preview_url: str = Field(..., description="Direct image URL")
-    width: int = Field(..., description="Image width in pixels")
-    height: int = Field(..., description="Image height in pixels")
+    preview_url: str = Field(..., description="Explore URL for opening the chart")
+    width: int = Field(..., description="Requested Explore viewport width in pixels")
+    height: int = Field(..., description="Requested Explore viewport height in pixels")
     supports_interaction: bool = Field(
-        False, description="Static image, no interaction"
+        True, description="Explore URL supports chart interaction"
     )
 
 

@@ -48,7 +48,6 @@ from superset.mcp_service.chart.performance_utils import (
 from superset.mcp_service.chart.schemas import (
     AccessibilityMetadata,
     GenerateChartResponse,
-    parse_chart_config,
     serialize_chart_object,
     UpdateChartRequest,
 )
@@ -378,38 +377,8 @@ async def update_chart(  # noqa: C901
         saved = False
         new_form_data: dict[str, Any] | None = None
 
-        # Parse config once upfront so helpers and analysis can reuse it.
-        parsed_config = None
-        if request.config is not None:
-            try:
-                parsed_config = parse_chart_config(request.config)
-            except (ValueError, TypeError) as e:
-                from superset.mcp_service.utils.error_sanitization import (
-                    _sanitize_validation_error,
-                )
-
-                sanitized = _sanitize_validation_error(e)
-                return GenerateChartResponse.model_validate(
-                    {
-                        "chart": None,
-                        "error": {
-                            "error_type": "validation_error",
-                            "message": f"Invalid chart configuration: {sanitized}",
-                            "details": sanitized,
-                            "error_code": "INVALID_CHART_CONFIG",
-                        },
-                        "performance": {
-                            "query_duration_ms": int(
-                                (time.perf_counter() - total_start_time) * 1000
-                            ),
-                            "cache_status": "error",
-                            "optimization_suggestions": [],
-                        },
-                        "success": False,
-                        "schema_version": "2.0",
-                        "api_version": "v1",
-                    }
-                )
+        # config is already a typed ChartConfig | None (validated by Pydantic)
+        parsed_config = request.config
 
         if not request.generate_preview:
             from superset.commands.chart.update import UpdateChartCommand
@@ -594,7 +563,7 @@ async def update_chart(  # noqa: C901
         return GenerateChartResponse.model_validate(result)
 
     except OAuth2RedirectError as ex:
-        await ctx.error(
+        await ctx.warning(
             "Chart update requires OAuth authentication: identifier=%s"
             % request.identifier
         )

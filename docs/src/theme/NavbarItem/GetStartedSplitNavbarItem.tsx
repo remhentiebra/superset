@@ -16,17 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import GetStartedSplitButton from '../../components/GetStartedSplitButton';
+import '../../styles/main.css';
 
-import { SHARED_COLUMN_CONFIG_PROPS } from './constants';
-
-const {tokenSeparators} = SHARED_COLUMN_CONFIG_PROPS.d3NumberFormat;
-
-test('should allow commas in D3 format inputs', () => {
-  expect(tokenSeparators).toBeDefined();
-  expect(tokenSeparators).not.toContain(',');
-});
-
-test('should have correct default token separators', () => {
-  const expectedSeparators = ['\r\n', '\n', '\t', ';'];
-  expect(tokenSeparators).toEqual(expectedSeparators);
-});
+export default function GetStartedSplitNavbarItem() {
+  return (
+    <GetStartedSplitButton
+      variant="navbar"
+      rootClassName="default-button-theme get-started-split get-started-button"
+    />
+  );
+}

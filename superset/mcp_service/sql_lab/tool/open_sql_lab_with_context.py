@@ -23,7 +23,7 @@ Tool for generating SQL Lab URLs with pre-populated sql and context.
 
 import logging
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastmcp import Context
 from superset_core.mcp.decorators import tool, ToolAnnotations
@@ -33,9 +33,50 @@ from superset.mcp_service.sql_lab.schemas import (
     OpenSqlLabRequest,
     SqlLabResponse,
 )
+from superset.mcp_service.utils import sanitize_for_llm_context
 from superset.mcp_service.utils.url_utils import get_superset_base_url
 
 logger = logging.getLogger(__name__)
+
+SQL_LAB_QUERY_PARAMS_TO_SANITIZE = frozenset({"sql", "title"})
+
+
+def _sanitize_sql_lab_url_for_llm_context(url: str) -> str:
+    """Wrap user-controlled SQL Lab query values while preserving navigation."""
+    if not url:
+        return url
+
+    parsed = urlsplit(url)
+    query_params = parse_qsl(parsed.query, keep_blank_values=True)
+    if not query_params:
+        return url
+
+    sanitized_params = [
+        (
+            name,
+            sanitize_for_llm_context(value, field_path=(name,))
+            if name in SQL_LAB_QUERY_PARAMS_TO_SANITIZE
+            else value,
+        )
+        for name, value in query_params
+    ]
+    return urlunsplit(parsed._replace(query=urlencode(sanitized_params)))
+
+
+def _sanitize_sql_lab_response_for_llm_context(
+    response: SqlLabResponse,
+) -> SqlLabResponse:
+    """Wrap user-controlled SQL Lab response content before LLM exposure."""
+    payload = response.model_dump(mode="python")
+    payload["url"] = _sanitize_sql_lab_url_for_llm_context(payload.get("url", ""))
+
+    for field_name in ("title", "error"):
+        payload[field_name] = sanitize_for_llm_context(
+            payload.get(field_name),
+            field_path=(field_name,),
+        )
+
+    return SqlLabResponse.model_validate(payload)
 
 
 def _build_context_sql(
@@ -111,12 +152,14 @@ def open_sql_lab_with_context(
     try:
         database, error = _get_accessible_database(request.database_connection_id)
         if error:
-            return SqlLabResponse(
-                url="",
-                database_id=request.database_connection_id,
-                schema_name=request.schema_name,
-                title=request.title,
-                error=error,
+            return _sanitize_sql_lab_response_for_llm_context(
+                SqlLabResponse(
+                    url="",
+                    database_id=request.database_connection_id,
+                    schema_name=request.schema_name,
+                    title=request.title,
+                    error=error,
+                )
             )
         assert database is not None
 
@@ -130,12 +173,14 @@ def open_sql_lab_with_context(
             "Generated SQL Lab URL for database %s", request.database_connection_id
         )
 
-        return SqlLabResponse(
-            url=url,
-            database_id=request.database_connection_id,
-            schema_name=request.schema_name,
-            title=request.title,
-            error=None,
+        return _sanitize_sql_lab_response_for_llm_context(
+            SqlLabResponse(
+                url=url,
+                database_id=request.database_connection_id,
+                schema_name=request.schema_name,
+                title=request.title,
+                error=None,
+            )
         )
 
     except Exception as e:
@@ -149,10 +194,12 @@ def open_sql_lab_with_context(
                 "Database rollback failed during error handling", exc_info=True
             )
         logger.error("Error generating SQL Lab URL: %s", e)
-        return SqlLabResponse(
-            url="",
-            database_id=request.database_connection_id,
-            schema_name=request.schema_name,
-            title=request.title,
-            error=f"Failed to generate SQL Lab URL: {str(e)}",
+        return _sanitize_sql_lab_response_for_llm_context(
+            SqlLabResponse(
+                url="",
+                database_id=request.database_connection_id,
+                schema_name=request.schema_name,
+                title=request.title,
+                error=f"Failed to generate SQL Lab URL: {str(e)}",
+            )
         )
