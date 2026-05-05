@@ -1350,7 +1350,7 @@ class SqlaTable(
         name = escape(self.name)
         url = escape(self.explore_url)
         anchor = f'<a target="_blank" href="{url}">{name}</a>'
-        return Markup(anchor)
+        return Markup(anchor)  # noqa: S704
 
     def get_catalog_perm(self) -> str | None:
         """Returns catalog permission if present, database one otherwise."""

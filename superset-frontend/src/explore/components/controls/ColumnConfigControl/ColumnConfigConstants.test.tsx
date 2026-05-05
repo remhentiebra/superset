@@ -19,7 +19,7 @@
 
 import { SHARED_COLUMN_CONFIG_PROPS } from './constants';
 
-const {tokenSeparators} = SHARED_COLUMN_CONFIG_PROPS.d3NumberFormat;
+const { tokenSeparators } = SHARED_COLUMN_CONFIG_PROPS.d3NumberFormat;
 
 test('should allow commas in D3 format inputs', () => {
   expect(tokenSeparators).toBeDefined();

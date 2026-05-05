@@ -499,7 +499,7 @@ class SavedQuery(
 
     @property
     def pop_tab_link(self) -> Markup:
-        return Markup(
+        return Markup(  # noqa: S704
             f"""
             <a href="/sqllab?savedQueryId={self.id}">
                 <i class="fa fa-link"></i>

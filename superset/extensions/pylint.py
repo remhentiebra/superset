@@ -76,6 +76,34 @@ class SQLParsingLibraryImportChecker(BaseChecker):
             self.add_message("disallowed-sql-import", node=node)
 
 
+class JSONImportChecker(BaseChecker):
+    name = "json-import"
+    priority = 0
+    msgs = {
+        "C9001": (
+            "Use superset.utils.json instead of the standard json module",
+            "json-import",
+            "Used when importing the standard json module outside allowed files.",
+        ),
+    }
+
+    def _is_disallowed(self, file_path: Path, root_mod: str) -> bool:
+        allowed = {
+            "**/superset/config.py",
+            "**/superset/extensions/__init__.py",
+        }
+        valid = any(file_path.match(pattern) for pattern in allowed)
+        return root_mod == "json" and not valid
+
+    def visit_import(self, node: nodes.Import) -> None:
+        root_file = Path(node.root().file or "")
+        for mod, _ in node.names:
+            root_mod = mod.split(".", 1)[0]
+            if self._is_disallowed(root_file, root_mod):
+                self.add_message("json-import", node=node)
+
+
 def register(linter: PyLinter) -> None:
+    linter.register_checker(JSONImportChecker(linter))
     linter.register_checker(SQLParsingLibraryImportChecker(linter))
     linter.register_checker(TransactionChecker(linter))

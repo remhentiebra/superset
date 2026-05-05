@@ -138,7 +138,10 @@ def test_datetime(console: Console, engine: Engine) -> None:
     "raw_engine_kwargs",
     help="Connect args as JSON or YAML",
 )
-def test_db(sqlalchemy_uri: str, raw_engine_kwargs: str | None = None) -> None:
+def test_db(  # noqa: PT028
+    sqlalchemy_uri: str,
+    raw_engine_kwargs: str | None = None,  # noqa: PT028
+) -> None:
     """
     Run a series of tests against an analytical database.
 

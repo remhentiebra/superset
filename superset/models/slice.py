@@ -322,7 +322,7 @@ class Slice(  # pylint: disable=too-many-public-methods
     @property
     def slice_link(self) -> Markup:
         name = escape(self.chart)
-        return Markup(f'<a href="{self.url}">{name}</a>')
+        return Markup(f'<a href="{self.url}">{name}</a>')  # noqa: S704
 
     @property
     def icons(self) -> str:
