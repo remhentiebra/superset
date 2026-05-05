@@ -19,6 +19,7 @@ from .create_dataset import create_dataset
 from .create_virtual_dataset import create_virtual_dataset
 from .get_dataset_info import get_dataset_info
 from .list_datasets import list_datasets
+from .query_dataset import query_dataset
 from .update_dataset_calculated_columns import update_dataset_calculated_columns
 from .update_dataset_metadata import update_dataset_metadata
 from .update_dataset_metrics import update_dataset_metrics
@@ -28,6 +29,7 @@ __all__ = [
     "get_dataset_info",
     "create_dataset",
     "create_virtual_dataset",
+    "query_dataset",
     "update_dataset_metadata",
     "update_dataset_metrics",
     "update_dataset_calculated_columns",

@@ -17,6 +17,7 @@
 
 """System tools for MCP service."""
 
+from .generate_bug_report import generate_bug_report
 from .get_database_info import get_database_info
 from .get_instance_info import get_instance_info
 from .get_schema import get_schema
@@ -24,6 +25,7 @@ from .health_check import health_check
 from .list_databases import list_databases
 
 __all__ = [
+    "generate_bug_report",
     "get_database_info",
     "health_check",
     "get_instance_info",
