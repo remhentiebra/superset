@@ -16,6 +16,7 @@
 # under the License.
 
 import copy
+from typing import Any, cast
 
 import yaml
 from pytest_mock import MockerFixture
@@ -153,11 +154,12 @@ def test_import_assets_imports_tags(mocker: MockerFixture, session: Session) -> 
 
     ImportAssetsCommand._import(configs, contents=contents)
 
-    chart_uuids = {config["uuid"] for config in charts_with_tags.values()}
+    chart_uuids = {
+        cast(str, cast(dict[str, Any], config)["uuid"])
+        for config in charts_with_tags.values()
+    }
     imported_charts = (
-        db.session.query(Slice)
-        .filter(Slice.uuid.in_(chart_uuids))  # type: ignore[union-attr]
-        .all()
+        db.session.query(Slice).filter(cast(Any, Slice.uuid).in_(chart_uuids)).all()
     )
     assert len(imported_charts) == len(chart_uuids)
     for chart in imported_charts:
@@ -169,10 +171,13 @@ def test_import_assets_imports_tags(mocker: MockerFixture, session: Session) -> 
         assert len(assocs) == 1
         assert assocs[0].tag.name == "chart_tag"
 
-    dashboard_uuids = {config["uuid"] for config in dashboards_with_tags.values()}
+    dashboard_uuids = {
+        cast(str, cast(dict[str, Any], config)["uuid"])
+        for config in dashboards_with_tags.values()
+    }
     imported_dashboards = (
         db.session.query(Dashboard)
-        .filter(Dashboard.uuid.in_(dashboard_uuids))  # type: ignore[union-attr]
+        .filter(cast(Any, Dashboard.uuid).in_(dashboard_uuids))
         .all()
     )
     assert len(imported_dashboards) == len(dashboard_uuids)

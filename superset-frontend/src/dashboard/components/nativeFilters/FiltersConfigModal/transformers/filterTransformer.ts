@@ -117,7 +117,7 @@ function transformFormInput(
     excluded: [],
   };
 
-  return {
+  const result: Filter & { time_grains?: string[] } = {
     id,
     type: NativeFilterType.NativeFilter,
     name: formInputs.name,
@@ -131,14 +131,17 @@ function transformFormInput(
     adhoc_filters: formInputs.adhoc_filters,
     time_range: formInputs.time_range,
     granularity_sqla: formInputs.granularity_sqla,
-    time_grains: formInputs.time_grains?.length
-      ? formInputs.time_grains
-      : undefined,
     sortMetric: formInputs.sortMetric ?? null,
     requiredFirst: formInputs.requiredFirst
       ? Object.values(formInputs.requiredFirst).find(rf => rf)
       : undefined,
   };
+
+  if (formInputs.time_grains?.length) {
+    result.time_grains = formInputs.time_grains;
+  }
+
+  return result;
 }
 
 function transformSavedFilter(

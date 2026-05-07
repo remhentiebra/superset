@@ -20,8 +20,7 @@ MCP tool: generate_chart (simplified schema)
 
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any
 
 from fastmcp import Context
 from sqlalchemy.exc import SQLAlchemyError
@@ -39,14 +38,16 @@ from superset.mcp_service.chart.chart_utils import (
     map_config_to_form_data,
     validate_chart_dataset,
 )
+from superset.mcp_service.chart.compile import (
+    _compile_chart,
+    CompileResult,
+    validate_and_compile,
+)
 from superset.mcp_service.chart.performance_utils import (
     build_performance_metadata,
     record_stage,
 )
 from superset.mcp_service.chart.preview_utils import generate_preview_from_form_data
-from superset.mcp_service.chart.query_context_utils import (
-    create_query_context_from_form_data,
-)
 from superset.mcp_service.chart.schemas import (
     AccessibilityMetadata,
     CHART_FORM_DATA_EXCLUDED_FIELD_NAMES,
@@ -81,80 +82,7 @@ def _sanitize_generate_chart_form_data_for_llm_context(
     )
 
 
-@dataclass
-class CompileResult:
-    """Result of a chart compile check (test query execution)."""
-
-    success: bool
-    error: str | None = None
-    warnings: List[str] = field(default_factory=list)
-    row_count: int | None = None
-    query_duration_ms: int | None = None
-
-
-def _compile_chart(
-    form_data: Dict[str, Any],
-    dataset_id: int,
-) -> CompileResult:
-    """Execute the chart's query to verify it renders without errors.
-
-    Builds a ``QueryContext`` from *form_data* and runs it through
-    ``ChartDataCommand``.  A small ``row_limit`` is used so the check is
-    fast — we only need to know the query compiles and returns data, not
-    fetch the full result set.
-
-    Returns a :class:`CompileResult` with ``success=True`` when the
-    query executes cleanly.
-    """
-    from superset.commands.chart.data.get_data_command import ChartDataCommand
-    from superset.commands.chart.exceptions import (
-        ChartDataCacheLoadError,
-        ChartDataQueryFailedError,
-    )
-
-    query_start_time = time.perf_counter()
-    try:
-        query_context = create_query_context_from_form_data(
-            form_data,
-            dataset_id,
-            row_limit=2,
-        )
-
-        command = ChartDataCommand(query_context)
-        command.validate()
-        result = command.run()
-
-        warnings: List[str] = []
-        row_count = 0
-        for query in result.get("queries", []):
-            if query.get("error"):
-                return CompileResult(
-                    success=False,
-                    error=str(query["error"]),
-                    query_duration_ms=int(
-                        (time.perf_counter() - query_start_time) * 1000
-                    ),
-                )
-            row_count += len(query.get("data", []))
-
-        return CompileResult(
-            success=True,
-            warnings=warnings,
-            row_count=row_count,
-            query_duration_ms=int((time.perf_counter() - query_start_time) * 1000),
-        )
-    except (ChartDataQueryFailedError, ChartDataCacheLoadError) as exc:
-        return CompileResult(
-            success=False,
-            error=str(exc),
-            query_duration_ms=int((time.perf_counter() - query_start_time) * 1000),
-        )
-    except (CommandException, ValueError, KeyError) as exc:
-        return CompileResult(
-            success=False,
-            error=str(exc),
-            query_duration_ms=int((time.perf_counter() - query_start_time) * 1000),
-        )
+__all__ = ["CompileResult", "_compile_chart", "validate_and_compile", "generate_chart"]
 
 
 @tool(
