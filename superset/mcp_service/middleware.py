@@ -41,6 +41,12 @@ from superset.mcp_service.constants import (
     DEFAULT_TOKEN_LIMIT,
     DEFAULT_WARN_THRESHOLD_PCT,
 )
+from superset.mcp_service.utils.token_utils import (
+    estimate_response_tokens,
+    format_size_limit_error,
+    INFO_TOOLS,
+    truncate_oversized_response,
+)
 from superset.utils.core import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -1111,11 +1117,6 @@ class ResponseSizeGuardMiddleware(Middleware):
         ``content[0].text`` as a JSON string.  We parse that string, run the
         truncation phases on the resulting dict, then re-wrap the result.
         """
-        from superset.mcp_service.utils.token_utils import (
-            estimate_response_tokens,
-            truncate_oversized_response,
-        )
-
         # Unwrap ToolResult so truncation operates on the real payload
         extracted = self._extract_payload_from_tool_result(response)
         if extracted is not None:
@@ -1198,12 +1199,6 @@ class ResponseSizeGuardMiddleware(Middleware):
         # Execute the tool
         response = await call_next(context)
 
-        # Estimate response token count (guard against huge responses causing OOM)
-        from superset.mcp_service.utils.token_utils import (
-            estimate_response_tokens,
-            format_size_limit_error,
-        )
-
         # When the response is a ToolResult, estimate tokens on the actual
         # payload inside content[0].text rather than on the ToolResult
         # wrapper (which would double-serialize the JSON string).
@@ -1240,8 +1235,6 @@ class ResponseSizeGuardMiddleware(Middleware):
             params = getattr(context.message, "params", {}) or {}
 
             # For info tools, try dynamic truncation before blocking
-            from superset.mcp_service.utils.token_utils import INFO_TOOLS
-
             if tool_name in INFO_TOOLS:
                 truncated = self._try_truncate_info_response(
                     tool_name, response, estimated_tokens
