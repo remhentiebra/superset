@@ -126,7 +126,11 @@ def _get_accessible_database(database_id: int) -> tuple[Any | None, str | None]:
     with event_logger.log_context(action="mcp.open_sql_lab.db_validation"):
         database = DatabaseDAO.find_by_id(database_id)
     if not database:
-        return None, f"Database with ID {database_id} not found"
+        return (
+            None,
+            f"Database with ID {database_id} not found."
+            " Use list_databases to get valid database IDs.",
+        )
     if not security_manager.can_access_database(database):
         return None, f"Access denied to database {database.database_name}"
     return database, None
